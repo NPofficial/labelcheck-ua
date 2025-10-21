@@ -1,0 +1,287 @@
+# Label Check - Frontend Rules
+
+## PROJECT TYPE
+Next.js 14 (App Router) + TypeScript + Tailwind CSS + shadcn/ui
+
+## TECH STACK
+- Next.js 14.2+ (App Router, Server Components)
+- React 18+
+- TypeScript (strict mode enabled in tsconfig.json)
+- Tailwind CSS 3.4+
+- shadcn/ui components
+- Zod для валідації форм
+- React Hook Form для управління формами
+
+## ДИЗАЙН-СИСТЕМА
+
+### Кольори (Tailwind)
+- **Primary**: #3B82F6 (blue-500) - довіра, професійність
+- **Success**: #10B981 (green-500) - валідація пройдена
+- **Error**: #EF4444 (red-500) - критичні помилки  
+- **Warning**: #F59E0B (amber-500) - попередження
+- **Background**: #FFFFFF, #F8FAFC (slate-50)
+- **Text**: #1E293B (slate-800 primary), #64748B (slate-500 secondary)
+- **Border**: #E2E8F0 (slate-200)
+
+### Типографіка
+- **Font**: Inter (через next/font/google) або system fonts
+- **Заголовки**: 24-32px (text-2xl до text-3xl), font-weight 600-700
+- **Текст**: 16px (text-base), line-height 1.6
+- **Малий текст**: 14px (text-sm)
+
+### UI/UX Принципи
+- Мінімум 44x44px для кліків (Tailwind: min-h-11 min-w-11)
+- Щедрі відступи - використовуй space-y-4, space-y-6, не тісно
+- Чіткі CTA кнопки з контрастними кольорами
+- Progress bars для async операцій (використовуй shadcn/ui Progress)
+- Tooltips для складних полів
+- Keyboard navigation (tabIndex, aria-labels)
+- Responsive design (mobile-first)
+
+## СТРУКТУРА ПРОЄКТУ
+
+```
+frontend/
+├── src/app/                    # Next.js App Router
+│   ├── layout.tsx             # Root layout
+│   ├── page.tsx               # Home page
+│   ├── globals.css            # Global Tailwind styles
+│   ├── generator/page.tsx     # Label generator
+│   ├── checker/page.tsx       # Label checker
+│   └── results/[id]/page.tsx  # Validation results
+│
+├── src/components/
+│   ├── ui/                    # shadcn/ui components
+│   │   ├── button.tsx
+│   │   ├── input.tsx
+│   │   ├── card.tsx
+│   │   ├── badge.tsx
+│   │   ├── alert.tsx
+│   │   ├── progress.tsx
+│   │   └── textarea.tsx
+│   │
+│   ├── forms/                 # Form components
+│   │   ├── ProductInfoForm.tsx
+│   │   ├── IngredientsForm.tsx
+│   │   ├── DosageForm.tsx
+│   │   ├── WarningsForm.tsx
+│   │   └── OperatorForm.tsx
+│   │
+│   ├── checker/               # Checker components
+│   │   ├── FileUpload.tsx
+│   │   └── TextInput.tsx
+│   │
+│   ├── results/               # Results components
+│   │   ├── ValidationReport.tsx
+│   │   ├── ErrorCard.tsx
+│   │   ├── WarningCard.tsx
+│   │   └── SuccessCard.tsx
+│   │
+│   ├── layout/                # Layout components
+│   │   ├── Header.tsx
+│   │   ├── Footer.tsx
+│   │   └── Navigation.tsx
+│   │
+│   └── common/                # Common components
+│       ├── LoadingSpinner.tsx
+│       └── ErrorBoundary.tsx
+│
+├── src/lib/                   # Utilities
+│   ├── utils.ts              # Helper functions (cn, formatDate)
+│   ├── api-client.ts         # API client
+│   ├── validations.ts        # Validation functions
+│   └── constants.ts          # Constants
+│
+└── src/types/                 # TypeScript types
+    ├── label.ts              # Label data types
+    ├── api.ts                # API types
+    └── forms.ts              # Form types
+```
+
+## API INTEGRATION
+
+### Base Configuration
+```typescript
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"
+```
+
+### Endpoints
+- `POST /api/labels/generate` - генерація тексту етикетки
+- `POST /api/labels/check` - перевірка макету (файл або текст)
+- `POST /api/dosage/calculate` - перевірка дозувань
+- `GET /api/health` - health check
+
+### API Client Usage
+```typescript
+import { apiClient } from "@/lib/api-client"
+
+const result = await apiClient.checkLabel(file)
+const generated = await apiClient.generateLabel(labelData)
+```
+
+## ПРАВИЛА КОДУ
+
+### Server vs Client Components
+- **БЕЗ** "use client": layouts, static pages, server data fetching
+- **З** "use client": інтерактивність (onClick, onChange, useState, useEffect)
+
+### TypeScript
+- Всі компоненти з явними типами props
+- Використовуй interface для props, type для unions
+- Strict mode увімкнено - всі any мають бути типізовані
+- Import types: `import type { Props } from './types'`
+
+### Component Structure
+```typescript
+import type { ComponentProps } from './types'
+
+interface ButtonProps {
+  variant?: "default" | "primary" | "ghost"
+  size?: "sm" | "md" | "lg"
+  children: React.ReactNode
+}
+
+export function Button({ variant = "default", size = "md", children }: ButtonProps) {
+  return <button className={cn(buttonVariants({ variant, size }))}>{children}</button>
+}
+```
+
+### Styling
+- **ТІЛЬКИ** Tailwind utility classes
+- **БЕЗ** custom CSS файлів (окрім globals.css)
+- Використовуй `cn()` utility для умовних класів:
+  ```typescript
+  className={cn("base-classes", isActive && "active-classes")}
+  ```
+- shadcn/ui компоненти для всіх UI елементів
+
+### Forms
+- React Hook Form для управління станом
+- Zod для схем валідації
+- Приклад:
+  ```typescript
+  import { useForm } from "react-hook-form"
+  import { zodResolver } from "@hookform/resolvers/zod"
+  import { z } from "zod"
+  
+  const schema = z.object({
+    name: z.string().min(1, "Обов'язкове поле")
+  })
+  
+  const { register, handleSubmit } = useForm({
+    resolver: zodResolver(schema)
+  })
+  ```
+
+### Error Handling
+- ErrorBoundary для React errors
+- try/catch для async операцій
+- Toast notifications для user feedback
+
+### Loading States
+- LoadingSpinner component
+- Skeleton screens для важливого контенту
+- Progress bars для multi-step процесів
+
+### Async Operations
+```typescript
+const [isLoading, setIsLoading] = useState(false)
+const [error, setError] = useState<string | null>(null)
+
+try {
+  setIsLoading(true)
+  const result = await apiClient.checkLabel(file)
+  // handle success
+} catch (err) {
+  setError(err instanceof Error ? err.message : "Помилка")
+} finally {
+  setIsLoading(false)
+}
+```
+
+## NAMING CONVENTIONS
+
+### Files & Folders
+- Components: PascalCase (`Button.tsx`, `ProductInfoForm.tsx`)
+- Utils/libs: kebab-case (`api-client.ts`, `text-processing.ts`)
+- Pages: kebab-case (`page.tsx`, `[id]/page.tsx`)
+
+### Code
+- Components: PascalCase (`export function Button()`)
+- Variables/functions: camelCase (`const userName = ""`, `function formatDate()`)
+- Constants: UPPER_SNAKE_CASE (`const API_URL = ""`)
+- Types/Interfaces: PascalCase (`interface ButtonProps {}`)
+
+## ACCESSIBILITY
+
+- Semantic HTML (header, nav, main, footer, article, section)
+- ARIA labels де потрібно
+- Keyboard navigation (Tab, Enter, Space)
+- Focus indicators
+- Alt text для images
+- Labels для форм
+- Error messages пов'язані з полями
+
+## PERFORMANCE
+
+- Use Server Components де можливо
+- Dynamic imports для великих компонентів
+- Image optimization через next/image
+- Lazy loading для non-critical components
+- Мемоізація дорогих обчислень (useMemo, useCallback)
+
+## TESTING (майбутнє)
+
+- Jest для unit tests
+- React Testing Library для component tests
+- Playwright для E2E tests
+
+## ENVIRONMENT VARIABLES
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000/api
+```
+
+## COMMON PATTERNS
+
+### Loading State
+```typescript
+{isLoading ? (
+  <LoadingSpinner />
+) : (
+  <Content />
+)}
+```
+
+### Error Display
+```typescript
+{error && (
+  <Alert variant="destructive">
+    <AlertDescription>{error}</AlertDescription>
+  </Alert>
+)}
+```
+
+### Conditional Rendering
+```typescript
+{items.length > 0 ? (
+  items.map(item => <Item key={item.id} {...item} />)
+) : (
+  <p>Немає даних</p>
+)}
+```
+
+## UKRAINIAN LOCALIZATION
+
+- Всі тексти українською мовою
+- Формати дат: ДД.ММ.РРРР
+- Числа: 1 234,56 (пробіл для тисяч, кома для десяткових)
+- Валюта: 640 000 грн
+
+## NOTES
+
+- Проєкт фокусується на валідації етикеток дієтичних добавок в Україні
+- Критична важливість accurate валідації (штрафи 640,000 грн)
+- UX для фармацевтів/виробників - професійний тон
+- Прозорість: показуй джерела порушень (Наказ МОЗ №1114)
+

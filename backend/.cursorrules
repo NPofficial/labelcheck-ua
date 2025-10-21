@@ -1,0 +1,552 @@
+# Label Check - Backend Rules
+
+## PROJECT TYPE
+FastAPI + Python 3.11+ + Claude AI + Supabase
+
+## TECH STACK
+- **FastAPI** 0.100+ (async web framework)
+- **Python** 3.11+ (type hints, async/await)
+- **Pydantic v2** (schemas, settings, validation)
+- **Anthropic Claude API** (claude-3-5-sonnet-20241022)
+- **Supabase** (PostgreSQL database)
+- **python-docx** (Word document generation)
+- **ReportLab** (PDF generation)
+- **Pillow** (image processing)
+- **PyPDF2** (PDF text extraction)
+
+## СТРУКТУРА ПРОЄКТУ
+
+```
+backend/
+├── app/
+│   ├── main.py                     # FastAPI app з CORS, routes
+│   ├── config.py                   # Settings (pydantic-settings)
+│   │
+│   ├── api/
+│   │   ├── routes/                 # API endpoints
+│   │   │   ├── generate.py         # POST /api/labels/generate
+│   │   │   ├── check.py            # POST /api/labels/check
+│   │   │   ├── dosage.py           # POST /api/dosage/calculate
+│   │   │   └── health.py           # GET /api/health
+│   │   │
+│   │   └── schemas/                # Pydantic models
+│   │       ├── label.py            # Label data schemas
+│   │       ├── validation.py       # Validation result schemas
+│   │       └── response.py         # API response schemas
+│   │
+│   ├── services/                   # Business logic
+│   │   ├── claude_service.py       # Claude AI integration
+│   │   ├── validation_service.py   # Label validation
+│   │   ├── generation_service.py   # Label generation
+│   │   ├── dosage_service.py       # Dosage checking
+│   │   ├── document_service.py     # Document processing
+│   │   └── email_service.py        # Email notifications
+│   │
+│   ├── db/                         # Database
+│   │   ├── supabase_client.py      # Supabase singleton client
+│   │   ├── models.py               # Database models
+│   │   └── queries.py              # Database queries
+│   │
+│   ├── utils/                      # Utilities
+│   │   ├── image_processing.py     # OCR, image manipulation
+│   │   ├── pdf_processing.py       # PDF text extraction
+│   │   └── text_processing.py      # Text cleaning, tokenization
+│   │
+│   ├── prompts/                    # Claude AI prompts
+│   │   ├── system_prompts.py       # System prompts (16k + 6k chars)
+│   │   └── validation_prompts.py   # Validation-specific prompts
+│   │
+│   └── data/                       # Regulatory data
+│       ├── loader.py               # RegulatoryDataLoader
+│       └── regulatory/             # JSON files
+│           ├── mandatory_fields.json      # 18 полів
+│           ├── forbidden_phrases.json     # 52 фрази
+│           ├── allowed_substances.json    # 35 речовин
+│           └── regulatory_acts.json       # 4 закони
+│
+├── scripts/
+│   ├── seed_database.py            # Seed Supabase
+│   └── update_regulations.py       # Update regulatory data
+│
+├── tests/
+│   └── test_main.py
+│
+├── requirements.txt
+├── Dockerfile
+└── .env.example
+```
+
+## НОРМАТИВНА БАЗА УКРАЇНИ
+
+### Дані (завантажені в Supabase)
+- **18 обов'язкових полів** (mandatory_fields.json)
+  - product_name_label, edrpou_code, operator_full_address...
+  - Критичність: critical (640,000 грн) або warning (62,600 грн)
+  
+- **52 заборонені фрази** (forbidden_phrases.json)
+  - Категорії: treatment, disease, medical, veiled
+  - Всі штрафи: 640,000 грн (critical) або 62,600 грн (warning)
+  
+- **35 дозволених речовин** (allowed_substances.json)
+  - Вітаміни (13), Мінерали (15), Інші (7)
+  - Для кожної: max_daily_dose, three_times_limit, allowed_forms
+  
+- **4 нормативні акти** (regulatory_acts.json)
+  - Закон України "Про лікарські засоби"
+  - Наказ МОЗ №1114
+  - GMP, ICH стандарти
+
+### Ключові закони
+- **Закон №4122-IX**: Штраф 640,000 грн (критичні порушення)
+- **Закон №2639-VIII**: Штраф 62,600 грн (попередження)
+- **Наказ МОЗ №1114**: Основний регуляторний документ для дієтичних добавок
+
+## CLAUDE AI INTEGRATION
+
+### Configuration
+```python
+Model: claude-3-5-sonnet-20241022
+Max tokens: 4096
+Temperature: 0.7
+API Key: settings.claude_api_key
+```
+
+### Prompts
+- **Validation Prompt**: 16,634 chars
+  - Повна нормативна база
+  - Інструкції для аналізу
+  - JSON структура відповіді
+  
+- **Generation Prompt**: 6,426 chars
+  - Шаблон етикетки
+  - Заборонені фрази
+  - Обов'язкові розділи
+
+### Usage Pattern
+```python
+from app.services.claude_service import ClaudeService
+from app.prompts.system_prompts import LABEL_VALIDATION_SYSTEM_PROMPT
+
+service = ClaudeService()
+result = await service.generate_text(
+    prompt=label_text,
+    system_prompt=LABEL_VALIDATION_SYSTEM_PROMPT,
+    max_tokens=4096
+)
+```
+
+## API ENDPOINTS
+
+### POST /api/labels/generate
+**Генерація комплаєнтної етикетки**
+
+Request Body:
+```python
+{
+  "product_info": {...},
+  "ingredients": [...],
+  "dosages": [...],
+  "warnings": [...],
+  "operator_info": {...},
+  "format": "pdf" | "docx" | "png"
+}
+```
+
+Response:
+```python
+{
+  "label_text": str,
+  "validation_status": "passed" | "has_warnings",
+  "warnings": [...],
+  "metadata": {...}
+}
+```
+
+### POST /api/labels/check
+**Перевірка етикетки на відповідність**
+
+Request Body:
+- `file`: UploadFile (image/pdf) OR
+- `text`: str (plain text)
+
+Response:
+```python
+{
+  "critical_errors": [
+    {
+      "error_id": "ERR_001",
+      "category": "forbidden_phrase",
+      "title": str,
+      "found_text": str,
+      "regulatory_source": "Наказ МОЗ №1114, п.3.2",
+      "explanation": str,
+      "recommendation": str,
+      "penalty_amount": 640000
+    }
+  ],
+  "warnings": [...],
+  "correct_items": [...],
+  "overall_score": 7.5,
+  "risk_level": "high" | "medium" | "low",
+  "total_potential_fines": 1920000,
+  "regulatory_acts_used": [...]
+}
+```
+
+### POST /api/dosage/calculate
+**Перевірка дозувань інгредієнтів**
+
+Request Body:
+```python
+{
+  "ingredients": [
+    {
+      "name": "Вітамін C",
+      "quantity": 1000.0,
+      "unit": "мг",
+      "form": "аскорбінова кислота"
+    }
+  ]
+}
+```
+
+Response:
+```python
+{
+  "errors": [...],
+  "warnings": [...],
+  "all_valid": bool,
+  "total_ingredients_checked": int,
+  "substances_not_found": int
+}
+```
+
+### GET /api/health
+Health check endpoint
+
+## ПРАВИЛА КОДУ
+
+### Async/Await
+```python
+# ВСІ I/O операції мають бути async
+async def check_label(file: UploadFile) -> ValidationResult:
+    text = await extract_text(file)
+    result = await validate_text(text)
+    return result
+```
+
+### Type Hints (обов'язково!)
+```python
+from typing import List, Dict, Optional
+
+async def check_dosages(
+    self,
+    ingredients: List[Dict]
+) -> DosageCheckResult:
+    """Type hints для всіх параметрів та return"""
+    pass
+```
+
+### Pydantic Schemas
+```python
+from pydantic import BaseModel, Field
+
+class ProductInfo(BaseModel):
+    name: str = Field(description="Product name")
+    manufacturer: str = Field(description="Manufacturer")
+    dosage_form: str
+    strength: str
+```
+
+### Docstrings (Google Style)
+```python
+async def validate_label(self, text: str) -> ValidationResult:
+    """
+    Validate pharmaceutical label text.
+    
+    Args:
+        text: Label text to validate
+        
+    Returns:
+        ValidationResult with errors and warnings
+        
+    Raises:
+        HTTPException: If validation fails
+        
+    Example:
+        >>> result = await service.validate_label("ДІЄТИЧНА ДОБАВКА...")
+        >>> result.is_valid
+        True
+    """
+    pass
+```
+
+### Error Handling
+```python
+from fastapi import HTTPException
+
+try:
+    result = await service.validate(text)
+except ValidationError as e:
+    raise HTTPException(status_code=400, detail=str(e))
+except Exception as e:
+    logger.error(f"Unexpected error: {e}", exc_info=True)
+    raise HTTPException(status_code=500, detail="Internal server error")
+```
+
+### Logging
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+logger.info("Processing request")
+logger.warning("Non-critical issue")
+logger.error("Error occurred", exc_info=True)
+logger.debug("Debug information")
+```
+
+### Environment Variables
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    claude_api_key: str = Field(..., alias="CLAUDE_API_KEY")
+    supabase_url: str = Field(..., alias="SUPABASE_URL")
+    
+    class Config:
+        env_file = ".env"
+```
+
+## SUPABASE DATABASE
+
+### Tables
+```sql
+-- mandatory_fields (18 records)
+CREATE TABLE mandatory_fields (
+  id SERIAL PRIMARY KEY,
+  field_name TEXT NOT NULL,
+  description TEXT,
+  regulatory_source TEXT,
+  penalty_amount INTEGER
+);
+
+-- forbidden_phrases (52 records)
+CREATE TABLE forbidden_phrases (
+  id SERIAL PRIMARY KEY,
+  phrase TEXT NOT NULL,
+  category TEXT,
+  variations JSONB,
+  penalty_amount INTEGER
+);
+
+-- allowed_substances (35 records)
+CREATE TABLE allowed_substances (
+  id SERIAL PRIMARY KEY,
+  substance_name TEXT NOT NULL,
+  scientific_name TEXT,
+  max_daily_dose NUMERIC,
+  unit TEXT,
+  allowed_forms JSONB
+);
+
+-- regulatory_acts (4 records)
+CREATE TABLE regulatory_acts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  number TEXT,
+  date DATE,
+  key_requirements JSONB
+);
+```
+
+### Client Pattern (Singleton)
+```python
+from app.db.supabase_client import SupabaseClient
+
+client = SupabaseClient().client
+result = await client.table("mandatory_fields").select("*").execute()
+```
+
+### Queries
+```python
+# queries.py
+async def get_label(label_id: str) -> Optional[LabelModel]:
+    results = await supabase_client.select(
+        "labels",
+        filters={"id": label_id}
+    )
+    return LabelModel(**results[0]) if results else None
+```
+
+## SECURITY
+
+### CORS Configuration
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+### API Keys
+- Зберігати в `.env`
+- Доступ через `settings.claude_api_key`
+- НІКОЛИ не hardcode у коді
+
+### Input Validation
+- Всі inputs через Pydantic schemas
+- File size limits (MAX_FILE_SIZE = 10MB)
+- File type restrictions (ACCEPTED_FILE_TYPES)
+
+### Rate Limiting (майбутнє)
+```python
+from slowapi import Limiter
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+```
+
+## NAMING CONVENTIONS
+
+### Files & Modules
+- Modules: snake_case (`validation_service.py`)
+- Packages: snake_case (`app/services/`)
+
+### Code
+- Classes: PascalCase (`class ValidationService`)
+- Functions: snake_case (`async def check_dosages()`)
+- Constants: UPPER_SNAKE_CASE (`LABEL_VALIDATION_SYSTEM_PROMPT`)
+- Variables: snake_case (`ingredient_name = ""`)
+
+### Database
+- Tables: snake_case (`mandatory_fields`)
+- Columns: snake_case (`field_name`, `penalty_amount`)
+
+## DATA LOADING
+
+### RegulatoryDataLoader
+```python
+from app.data.loader import RegulatoryDataLoader
+
+# Кешовані методи (@lru_cache)
+fields = RegulatoryDataLoader.load_mandatory_fields()  # 18 items
+phrases = RegulatoryDataLoader.load_forbidden_phrases()  # 52 items
+substances = RegulatoryDataLoader.load_allowed_substances()  # 35 items
+
+# Пошукові методи
+substance = RegulatoryDataLoader.get_substance_by_name("Вітамін C")
+field = RegulatoryDataLoader.get_field_by_name("edrpou_code")
+
+# Контекст для Claude
+context = RegulatoryDataLoader.get_full_prompt_context()  # 12,344 chars
+```
+
+## DEPLOYMENT
+
+### Platform
+- **Primary**: Railway або Render
+- **Alternative**: Fly.io, Heroku
+
+### Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### Environment Variables (.env)
+```env
+CLAUDE_API_KEY=sk-ant-...
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_KEY=eyJ...
+ALLOWED_ORIGINS=http://localhost:3000
+```
+
+### Health Check
+```bash
+curl http://localhost:8000/api/health
+```
+
+## TESTING (майбутнє)
+
+### pytest + pytest-asyncio
+```python
+import pytest
+from fastapi.testclient import TestClient
+
+def test_health_check():
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    
+@pytest.mark.asyncio
+async def test_dosage_service():
+    service = DosageService()
+    result = await service.check_dosages([...])
+    assert result.all_valid
+```
+
+## COMMON PATTERNS
+
+### Service Pattern
+```python
+class ValidationService:
+    def __init__(self):
+        self.loader = RegulatoryDataLoader()
+        self.claude = ClaudeService()
+    
+    async def validate(self, text: str) -> ValidationResult:
+        # Business logic here
+        pass
+```
+
+### Repository Pattern
+```python
+class LabelQueries:
+    @staticmethod
+    async def create_label(data: Dict) -> LabelModel:
+        result = await supabase_client.insert("labels", data)
+        return LabelModel(**result)
+```
+
+### Error Response
+```python
+return JSONResponse(
+    status_code=400,
+    content={
+        "success": False,
+        "error": "Validation failed",
+        "details": errors
+    }
+)
+```
+
+## UKRAINIAN LOCALIZATION
+
+- Всі повідомлення українською
+- Формати: ДД.ММ.РРРР для дат
+- Валюта: 640 000 грн (з пробілами)
+- Одиниці: мг(mg), мкг(μg), г(g) - укр + англ у дужках
+
+## PERFORMANCE
+
+- Async I/O для всіх операцій БД
+- Connection pooling (Supabase)
+- Кешування через @lru_cache (RegulatoryDataLoader)
+- GZip compression middleware
+
+## NOTES
+
+- Критична точність валідації (штрафи до 640,000 грн)
+- Claude AI для глибокого аналізу завуальованих тверджень
+- Повна інтеграція з нормативною базою України
+- Прозорість: завжди вказуй джерело (Наказ МОЗ №1114, п.X.X)
+- Конкретні рекомендації: "Замініть X на Y"
+
