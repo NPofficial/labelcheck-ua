@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default="Label Check API", alias="APP_NAME")
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     environment: str = Field(default="development", alias="ENVIRONMENT")
-    debug: bool = Field(default=True, alias="DEBUG")
+    debug: bool = Field(default=False, alias="DEBUG")
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8000, alias="PORT")
     
@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     supabase_key: str = Field(..., alias="SUPABASE_KEY")
     
     # CORS
-    allowed_origins: List[str] = Field(
-        default=["http://localhost:3000"],
+    allowed_origins: str = Field(
+        default="http://localhost:3000",
         alias="ALLOWED_ORIGINS"
     )
     
@@ -43,18 +43,16 @@ class Settings(BaseSettings):
     # Rate Limiting
     rate_limit_per_minute: int = Field(default=60, alias="RATE_LIMIT_PER_MINUTE")
     
+    @property
+    def origins_list(self) -> List[str]:
+        """Convert comma-separated origins string to list"""
+        return [origin.strip() for origin in self.allowed_origins.split(",")]
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
-        
-        @classmethod
-        def parse_env_var(cls, field_name: str, raw_val: str) -> any:
-            if field_name == "allowed_origins":
-                return [origin.strip() for origin in raw_val.split(",")]
-            return raw_val
 
 
 # Create settings instance
 settings = Settings()
-
