@@ -38,9 +38,9 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Include routers
 app.include_router(health.router, tags=["Health"])
-app.include_router(generate.router, prefix="/api/labels", tags=["Generate"])
-app.include_router(check.router, prefix="/api/labels", tags=["Check"])
-app.include_router(dosage.router, prefix="/api/dosage", tags=["Dosage"])
+# app.include_router(generate.router, prefix="/api/labels", tags=["Generate"])
+# app.include_router(check.router, prefix="/api/labels", tags=["Check"])
+# app.include_router(dosage.router, prefix="/api/dosage", tags=["Dosage"])
 
 
 @app.on_event("startup")
