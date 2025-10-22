@@ -7,10 +7,10 @@ export default function Home() {
     <div className="container mx-auto px-4 py-12">
       <div className="mx-auto max-w-4xl text-center">
         <h1 className="mb-4 text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl">
-          Label Check
+          LabelCheck UA
         </h1>
         <p className="mb-8 text-lg text-muted-foreground">
-          Система генерації та перевірки етикеток фармацевтичних препаратів
+          Автоматична генерація та перевірка етикеток дієтичних добавок відповідно до законодавства України
         </p>
 
         <div className="grid gap-6 md:grid-cols-2">
@@ -18,7 +18,7 @@ export default function Home() {
             <CardHeader>
               <CardTitle>Генератор етикеток</CardTitle>
               <CardDescription>
-                Створіть професійну етикетку для вашого препарату
+                Створіть правильну етикетку для вашої дієтичної добавки
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -32,7 +32,7 @@ export default function Home() {
             <CardHeader>
               <CardTitle>Перевірка етикеток</CardTitle>
               <CardDescription>
-                Перевірте етикетку на відповідність стандартам
+                Перевірте етикетку на відповідність законодавству
               </CardDescription>
             </CardHeader>
             <CardContent>

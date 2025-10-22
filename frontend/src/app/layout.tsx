@@ -7,8 +7,8 @@ import { Footer } from "@/components/layout/Footer"
 const inter = Inter({ subsets: ["latin", "cyrillic"] })
 
 export const metadata: Metadata = {
-  title: "Label Check - Перевірка етикеток ліків",
-  description: "Система генерації та перевірки етикеток фармацевтичних препаратів",
+  title: "LabelCheck UA - Перевірка етикеток дієтичних добавок",
+  description: "Автоматична генерація та перевірка етикеток дієтичних добавок згідно українського законодавства",
 }
 
 export default function RootLayout({
