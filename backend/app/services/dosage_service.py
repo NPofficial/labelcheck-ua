@@ -1,30 +1,30 @@
-"""Dosage validation service for checking ingredient dosages against regulatory limits"""
+"""Dosage validation service with 4-level hierarchy for vitamins/minerals"""
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
-from app.data.loader import RegulatoryDataLoader
+from app.db.supabase_client import SupabaseClient
 from app.api.schemas.validation import DosageCheckResult, DosageError, DosageWarning
 
 logger = logging.getLogger(__name__)
 
 
 class DosageService:
-    """Service for validating ingredient dosages against regulatory limits"""
+    """Service for validating ingredient dosages against regulatory limits with 4-level hierarchy"""
     
     def __init__(self):
-        """Initialize dosage service with regulatory data loader"""
-        self.loader = RegulatoryDataLoader()
+        """Initialize dosage service with Supabase client"""
+        self.supabase = SupabaseClient().client
     
     async def check_dosages(self, ingredients: List[Dict]) -> DosageCheckResult:
         """
         Check dosages of all ingredients against regulatory limits.
         
-        Validates:
-        - Substance is in allowed substances database
-        - Form is allowed for the substance
-        - Dosage does not exceed maximum daily dose
-        - Dosage does not exceed triple the maximum (critical violation)
+        Implements 4-level hierarchy for vitamins/minerals:
+        - Level 1: EFSA Upper Limit (UL)
+        - Level 2: EFSA Safe Level
+        - Level 3: Table 1 (max_doses_table1)
+        - Level 4: Appendix 3, Section IV (physiological)
         
         Args:
             ingredients: List of ingredient dictionaries with structure:
@@ -40,17 +40,6 @@ class DosageService:
         
         Returns:
             DosageCheckResult with errors, warnings, and validation status
-            
-        Example:
-            >>> service = DosageService()
-            >>> ingredients = [
-            ...     {"name": "Вітамін C", "quantity": 1000.0, "unit": "мг", "form": "аскорбінова кислота"}
-            ... ]
-            >>> result = await service.check_dosages(ingredients)
-            >>> result.all_valid
-            False
-            >>> result.warnings[0].message
-            'Дозування перевищує рекомендовану добову норму'
         """
         logger.info(f"Checking dosages for {len(ingredients)} ingredients")
         
@@ -66,17 +55,55 @@ class DosageService:
             
             logger.debug(f"Checking ingredient: {ingredient_name} ({quantity} {unit})")
             
-            # Find substance in database (fuzzy matching)
-            substance = self.loader.get_substance_by_name(ingredient_name)
+            # PRIORITY #1: Check banned substances FIRST!
+            if await self._is_banned_substance(ingredient_name):
+                errors.append(DosageError(
+                    ingredient=ingredient_name,
+                    message="ЗАБОРОНЕНА РЕЧОВИНА! Використання суворо заборонено.",
+                    level=0,  # Special level for banned substances
+                    source="banned_substances",
+                    current_dose=f"{quantity} {unit}" if quantity else None,
+                    regulatory_source="Проєкт Змін до Наказу №1114, Додаток 3",
+                    recommendation="ВИДАЛИТИ цю речовину з складу",
+                    penalty_amount=640000
+                ))
+                logger.error(f"BANNED SUBSTANCE DETECTED: {ingredient_name}")
+                continue  # Skip other checks
             
-            if not substance:
-                # Substance not found in database
+            # Determine substance type and call appropriate method
+            result = None
+            
+            # Type 1: Vitamins/Minerals (4-level hierarchy)
+            if await self._is_vitamin_mineral(ingredient_name):
+                result = await self._check_vitamin_mineral(ingredient_name, quantity, unit, form)
+            
+            # Type 2: Amino acids (direct check in amino_acids table)
+            elif await self._is_amino_acid(ingredient_name):
+                result = await self._check_amino_acid(ingredient_name, quantity, unit, form)
+            
+            # Type 3: Plants (only allowed/forbidden check, NO dosage check)
+            elif await self._is_plant(ingredient_name):
+                result = await self._check_plant(ingredient_name, form)
+            
+            # Type 4: Microorganisms (only allowed/forbidden check, NO dosage check)
+            elif await self._is_microorganism(ingredient_name):
+                result = await self._check_microorganism(ingredient_name, form)
+            
+            # Type 5: Physiological substances (from max_doses_table1)
+            elif await self._is_physiological(ingredient_name):
+                result = await self._check_physiological(ingredient_name, quantity, unit, form)
+            
+            # Type 6: Novel Foods (future)
+            elif await self._is_novel_food(ingredient_name):
+                result = await self._check_novel_food(ingredient_name, quantity, unit, form)
+            
+            # Type 7: Unknown substance
+            else:
                 substances_not_found += 1
                 warnings.append(DosageWarning(
                     ingredient=ingredient_name,
-                    message="Речовина не знайдена в базі дозволених речовин",
-                    current_dose=f"{quantity} {unit}",
-                    max_allowed="Невідомо",
+                    message="Речовина не знайдена в базі дозволених",
+                    current_dose=f"{quantity} {unit}" if quantity else None,
                     recommendation=(
                         f"Переконайтесь що '{ingredient_name}' є дозволеною речовиною "
                         "згідно Наказу МОЗ №1114. Можливо назва вказана неправильно або "
@@ -86,81 +113,20 @@ class DosageService:
                 logger.warning(f"Substance not found: {ingredient_name}")
                 continue
             
-            logger.debug(f"Found substance: {substance['substance_name']}")
-            
-            # Check if form is allowed
-            if form:
-                if not self._is_form_allowed(form, substance.get("allowed_forms", [])):
-                    errors.append(DosageError(
-                        ingredient=substance["substance_name"],
-                        message=f"Форма '{form}' не є дозволеною для цієї речовини",
-                        current_form=form,
-                        allowed_forms=substance.get("allowed_forms", []),
-                        regulatory_source=substance.get("regulatory_source", "Наказ МОЗ №1114"),
-                        recommendation=(
-                            f"Використовуйте одну з дозволених форм: "
-                            f"{', '.join(substance.get('allowed_forms', []))}"
-                        ),
-                        penalty_amount=640000
-                    ))
-                    logger.error(f"Disallowed form for {ingredient_name}: {form}")
-                    continue
-            
-            # Check dosage
-            dose_check = self._check_dose(
-                quantity,
-                unit,
-                substance["max_daily_dose"],
-                substance["unit"],
-                substance["substance_name"]
-            )
-            
-            current_dose_str = f"{quantity} {unit}"
-            max_allowed_str = f"{substance['max_daily_dose']} {substance['unit']}"
-            three_times_str = f"{substance['three_times_limit']} {substance['unit']}"
-            
-            if dose_check["exceeds_3x"]:
-                # Critical error - exceeds triple limit
-                errors.append(DosageError(
-                    ingredient=substance["substance_name"],
-                    message="КРИТИЧНА ПОМИЛКА: Дозування перевищує потрійну добову норму",
-                    current_dose=current_dose_str,
-                    max_allowed=max_allowed_str,
-                    three_times_limit=three_times_str,
-                    regulatory_source=substance.get("regulatory_source", "Наказ МОЗ №1114"),
-                    recommendation=(
-                        f"НЕГАЙНО зменшіть дозування до {max_allowed_str} або нижче. "
-                        f"Поточне дозування {current_dose_str} небезпечне та порушує "
-                        f"нормативи більш ніж утричі!"
-                    ),
-                    penalty_amount=640000
-                ))
-                logger.error(
-                    f"CRITICAL: {ingredient_name} exceeds 3x limit: "
-                    f"{quantity} {unit} > {substance['three_times_limit']} {substance['unit']}"
-                )
-                
-            elif dose_check["exceeds_max"]:
-                # Warning - exceeds maximum but within triple limit
-                warnings.append(DosageWarning(
-                    ingredient=substance["substance_name"],
-                    message="Дозування перевищує рекомендовану добову норму",
-                    current_dose=current_dose_str,
-                    max_allowed=max_allowed_str,
-                    recommendation=(
-                        f"Рекомендується зменшити дозування до {max_allowed_str}. "
-                        f"Поточне дозування {current_dose_str} перевищує максимальну "
-                        f"добову норму, але знаходиться в межах потрійного ліміту "
-                        f"({three_times_str})."
-                    )
-                ))
-                logger.warning(
-                    f"{ingredient_name} exceeds max: "
-                    f"{quantity} {unit} > {substance['max_daily_dose']} {substance['unit']}"
-                )
-            else:
-                # Dosage is within limits
-                logger.debug(f"{ingredient_name} dosage is within limits")
+            # Process result
+            if result:
+                if result.get("type") == "error":
+                    errors.append(result["error"])
+                    # Also add form warning if exists
+                    if result.get("form_warning"):
+                        warnings.append(result["form_warning"])
+                elif result.get("type") == "warning":
+                    warnings.append(result["warning"])
+                elif result.get("type") == "ok":
+                    # Valid dose, but check for form warning
+                    if result.get("form_warning"):
+                        warnings.append(result["form_warning"])
+                # "ok" type means no errors/warnings (except form)
         
         # Determine if all dosages are valid
         all_valid = len(errors) == 0
@@ -180,275 +146,823 @@ class DosageService:
         
         return result
     
-    def _is_form_allowed(self, form: str, allowed_forms: List[str]) -> bool:
+    # ==================== TYPE CHECKING METHODS ====================
+    
+    async def _is_banned_substance(self, ingredient_name: str) -> bool:
+        """Check if substance is in banned_substances table (PRIORITY!)"""
+        try:
+            result = self.supabase.table("banned_substances").select("id").or_(
+                f"substance_name_ua.ilike.%{ingredient_name}%,substance_name_en.ilike.%{ingredient_name}%"
+            ).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            logger.debug(f"Error checking banned substance {ingredient_name}: {e}")
+            return False
+    
+    async def _is_vitamin_mineral(self, ingredient_name: str) -> bool:
+        """Check if substance is in allowed_vitamins_minerals"""
+        try:
+            result = self.supabase.table("allowed_vitamins_minerals").select("id").or_(
+                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+            ).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            logger.debug(f"Error checking vitamin/mineral {ingredient_name}: {e}")
+            return False
+    
+    async def _is_amino_acid(self, ingredient_name: str) -> bool:
+        """Check if substance is in amino_acids"""
+        try:
+            result = self.supabase.table("amino_acids").select("id").or_(
+                f"amino_acid_name_ua.eq.{ingredient_name},amino_acid_name_en.eq.{ingredient_name}"
+            ).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            logger.debug(f"Error checking amino acid {ingredient_name}: {e}")
+            return False
+    
+    async def _is_plant(self, ingredient_name: str) -> bool:
+        """Check if substance is in allowed_plants"""
+        try:
+            result = self.supabase.table("allowed_plants").select("id").or_(
+                f"botanical_name_lat.ilike.%{ingredient_name}%,common_name_ua.ilike.%{ingredient_name}%"
+            ).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            logger.debug(f"Error checking plant {ingredient_name}: {e}")
+            return False
+    
+    async def _is_microorganism(self, ingredient_name: str) -> bool:
+        """Check if substance is in microorganisms"""
+        try:
+            # Split into genus and species if space exists
+            parts = ingredient_name.split()
+            if len(parts) >= 2:
+                genus, species = parts[0], parts[1]
+                result = self.supabase.table("microorganisms").select("id").eq(
+                    "genus", genus
+                ).eq("species", species).execute()
+                return len(result.data) > 0
+            return False
+        except Exception as e:
+            logger.debug(f"Error checking microorganism {ingredient_name}: {e}")
+            return False
+    
+    async def _is_physiological(self, ingredient_name: str) -> bool:
+        """Check if substance is in max_doses_table1 with category='physiological'"""
+        try:
+            result = self.supabase.table("max_doses_table1").select("id").or_(
+                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+            ).eq("category", "physiological").execute()
+            return len(result.data) > 0
+        except Exception as e:
+            logger.debug(f"Error checking physiological {ingredient_name}: {e}")
+            return False
+    
+    async def _is_novel_food(self, ingredient_name: str) -> bool:
+        """Check if substance is in novel_foods"""
+        try:
+            result = self.supabase.table("novel_foods").select("id").or_(
+                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+            ).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            logger.debug(f"Error checking novel food {ingredient_name}: {e}")
+            return False
+    
+    # ==================== CHECKING METHODS FOR EACH TYPE ====================
+    
+    async def _check_vitamin_mineral(
+        self, 
+        ingredient_name: str, 
+        quantity: float, 
+        unit: str,
+        form: str
+    ) -> Optional[Dict]:
         """
-        Check if ingredient form is in the list of allowed forms.
+        4-level hierarchy for vitamins/minerals
         
-        Uses case-insensitive partial matching to handle variations.
-        
-        Args:
-            form: The form to check (e.g., "аскорбінова кислота")
-            allowed_forms: List of allowed forms
-            
-        Returns:
-            True if form is allowed, False otherwise
-            
-        Example:
-            >>> service = DosageService()
-            >>> service._is_form_allowed("аскорбінова кислота", ["аскорбінова кислота", "аскорбат натрію"])
-            True
-            >>> service._is_form_allowed("невідома форма", ["аскорбінова кислота"])
-            False
+        Level 1: EFSA Upper Limit (UL)
+        Level 2: EFSA Safe Level
+        Level 3: Table 1 (max_doses_table1)
+        Level 4: Warning if not found
         """
-        if not form or not allowed_forms:
-            return True  # If no form specified or no restrictions, allow
+        # Check if quantity is provided
+        if quantity is None:
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message="Кількість речовини не вказана",
+                    recommendation="Вкажіть кількість речовини для перевірки дози"
+                )
+            }
+        
+        # Step 1: Find in allowed_vitamins_minerals
+        vitamin_mineral = await self._get_vitamin_mineral(ingredient_name)
+        if not vitamin_mineral:
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message="Вітамін/мінерал не знайдений в allowed_vitamins_minerals",
+                    recommendation="Перевірте правильність назви"
+                )
+            }
+        
+        # Check form (warning only, not blocking)
+        form_warning = self._check_form(form, vitamin_mineral.get("allowed_forms", []), ingredient_name)
+        
+        # Step 2: Try EFSA through efsa_mapping
+        if vitamin_mineral.get("efsa_mapping"):
+            efsa_data = await self._get_efsa_limits(vitamin_mineral["efsa_mapping"])
+            
+            if efsa_data:
+                # LEVEL 1: EFSA UL
+                if efsa_data.get("ul_value") is not None:
+                    converted_quantity = self._convert_to_base_unit(
+                        quantity, unit, efsa_data["ul_unit"]
+                    )
+                    
+                    if converted_quantity > efsa_data["ul_value"]:
+                        error = DosageError(
+                            ingredient=ingredient_name,
+                            message="Перевищує EFSA Upper Limit (UL)",
+                            level=1,
+                            source="efsa_ul",
+                            current_dose=f"{quantity} {unit}",
+                            max_allowed=f"{efsa_data['ul_value']} {efsa_data['ul_unit']}",
+                            regulatory_source="EFSA 2024",
+                            recommendation=(
+                                f"Зменшіть дозування до {efsa_data['ul_value']} {efsa_data['ul_unit']} "
+                                f"або нижче. Поточна доза {quantity} {unit} перевищує допустимий "
+                                "верхній рівень споживання (UL) встановлений EFSA."
+                            ),
+                            penalty_amount=640000
+                        )
+                        result = {"type": "error", "error": error}
+                        if form_warning:
+                            result["form_warning"] = form_warning
+                        return result
+                    else:
+                        # Valid - return OK with form warning if exists
+                        result = {"type": "ok"}
+                        if form_warning:
+                            result["form_warning"] = form_warning
+                        return result
+                
+                # LEVEL 2: EFSA Safe Level
+                if efsa_data.get("safe_level_value") is not None:
+                    converted_quantity = self._convert_to_base_unit(
+                        quantity, unit, efsa_data["safe_level_unit"]
+                    )
+                    
+                    if converted_quantity > efsa_data["safe_level_value"]:
+                        error = DosageError(
+                            ingredient=ingredient_name,
+                            message="Перевищує EFSA Safe Level",
+                            level=2,
+                            source="efsa_safe",
+                            current_dose=f"{quantity} {unit}",
+                            max_allowed=f"{efsa_data['safe_level_value']} {efsa_data['safe_level_unit']}",
+                            regulatory_source="EFSA 2024",
+                            recommendation=(
+                                f"Зменшіть дозування до {efsa_data['safe_level_value']} "
+                                f"{efsa_data['safe_level_unit']} або нижче. Поточна доза {quantity} {unit} "
+                                "перевищує безпечний рівень споживання встановлений EFSA."
+                            ),
+                            penalty_amount=640000
+                        )
+                        result = {"type": "error", "error": error}
+                        if form_warning:
+                            result["form_warning"] = form_warning
+                        return result
+                    else:
+                        result = {"type": "ok"}
+                        if form_warning:
+                            result["form_warning"] = form_warning
+                        return result
+        
+        # LEVEL 3: Table 1 (max_doses_table1)
+        table1_dose = await self._get_max_dose_table1(
+            ingredient_name, 
+            ["vitamin", "mineral"]
+        )
+        
+        if table1_dose and table1_dose.get("max_dose_value") is not None:
+            converted_quantity = self._convert_to_base_unit(
+                quantity, unit, table1_dose["max_dose_unit"]
+            )
+            
+            if converted_quantity > table1_dose["max_dose_value"]:
+                error = DosageError(
+                    ingredient=ingredient_name,
+                    message="Перевищує максимальну дозу Таблиці 1",
+                    level=3,
+                    source="table1",
+                    current_dose=f"{quantity} {unit}",
+                    max_allowed=f"{table1_dose['max_dose_value']} {table1_dose['max_dose_unit']}",
+                    regulatory_source="Проєкт Змін до Наказу №1114, Додаток 1, Таблиця 1",
+                    recommendation=(
+                        f"Зменшіть дозування до {table1_dose['max_dose_value']} "
+                        f"{table1_dose['max_dose_unit']} або нижче."
+                    ),
+                    penalty_amount=640000
+                )
+                result = {"type": "error", "error": error}
+                if form_warning:
+                    result["form_warning"] = form_warning
+                return result
+            else:
+                result = {"type": "ok"}
+                if form_warning:
+                    result["form_warning"] = form_warning
+                return result
+        
+        # LEVEL 4: Not found in any level
+        warning = DosageWarning(
+            ingredient=ingredient_name,
+            message="Доза не встановлена в EFSA та Таблиці 1",
+            level=4,
+            source="unknown",
+            current_dose=f"{quantity} {unit}" if quantity else None,
+            recommendation=(
+                "Доза не знайдена в жодному з рівнів ієрархії. "
+                "Перевірте чи речовина правильно вказана та чи встановлена для неї доза."
+            )
+        )
+        
+        # If form warning exists, return it separately (will be added to warnings)
+        result = {"type": "warning", "warning": warning}
+        if form_warning:
+            result["form_warning"] = form_warning
+        return result
+    
+    async def _check_amino_acid(
+        self, 
+        ingredient_name: str, 
+        quantity: float, 
+        unit: str,
+        form: str
+    ) -> Optional[Dict]:
+        """
+        Check amino acid dosage
+        
+        IMPORTANT: max_daily_dose is ALREADY in amino_acids table!
+        No need to search in max_doses_table1
+        """
+        # Check if quantity is provided
+        if quantity is None:
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message="Кількість речовини не вказана",
+                    recommendation="Вкажіть кількість речовини для перевірки дози"
+                )
+            }
+        
+        try:
+            result = self.supabase.table("amino_acids").select("*").or_(
+                f"amino_acid_name_ua.eq.{ingredient_name},amino_acid_name_en.eq.{ingredient_name}"
+            ).execute()
+            
+            if not result.data or len(result.data) == 0:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Амінокислота не знайдена",
+                        recommendation="Перевірте правильність назви"
+                    )
+                }
+            
+            # Take first match
+            amino_acid = result.data[0]
+            
+            # Log if multiple matches
+            if len(result.data) > 1:
+                logger.warning(f"Multiple matches for amino acid '{ingredient_name}': {len(result.data)}")
+            
+            # Dose is already in table!
+            max_dose = amino_acid.get("max_daily_dose")
+            dose_unit = amino_acid.get("unit", "г/день")
+            
+            if max_dose is None:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Доза не встановлена для амінокислоти",
+                        level=3,
+                        source="amino_acids_table",
+                        recommendation="Перевірте чи доза встановлена в базі даних"
+                    )
+                }
+            
+            # Convert units (handle "г/день" format)
+            if "/" in dose_unit:
+                dose_unit = dose_unit.split("/")[0].strip()
+            
+            converted_quantity = self._convert_to_base_unit(quantity, unit, dose_unit)
+            
+            if converted_quantity > max_dose:
+                return {
+                    "type": "error",
+                    "error": DosageError(
+                        ingredient=ingredient_name,
+                        message="Перевищує максимальну дозу для амінокислоти",
+                        level=3,
+                        source="amino_acids_table",
+                        current_dose=f"{quantity} {unit}",
+                        max_allowed=f"{max_dose} {dose_unit}",
+                        regulatory_source="Проєкт Змін до Наказу №1114, Додаток 3, Розділ III",
+                        recommendation=(
+                            f"Зменшіть дозування до {max_dose} {dose_unit} або нижче."
+                        ),
+                        penalty_amount=640000
+                    )
+                }
+            else:
+                return {"type": "ok"}
+                
+        except Exception as e:
+            logger.error(f"Error checking amino acid {ingredient_name}: {e}")
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message=f"Помилка при перевірці амінокислоти: {str(e)}",
+                    recommendation="Перевірте правильність даних"
+                )
+            }
+    
+    async def _check_plant(self, ingredient_name: str, form: str) -> Optional[Dict]:
+        """
+        Check plant
+        
+        IMPORTANT: ONLY allowed/forbidden check
+        DOSAGE IS NOT CHECKED
+        """
+        try:
+            result = self.supabase.table("allowed_plants").select("*").or_(
+                f"botanical_name_lat.ilike.%{ingredient_name}%,common_name_ua.ilike.%{ingredient_name}%"
+            ).execute()
+            
+            if result.data and len(result.data) > 0:
+                return {
+                    "type": "ok",
+                    "message": "Рослина дозволена, доза не обмежена"
+                }
+            else:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Рослина не знайдена в списку дозволених",
+                        level=3,
+                        source="allowed_plants",
+                        recommendation=(
+                            "Переконайтесь що рослина дозволена згідно "
+                            "Додатку 3, Розділ I Проєкту Змін до Наказу №1114"
+                        )
+                    )
+                }
+        except Exception as e:
+            logger.error(f"Error checking plant {ingredient_name}: {e}")
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message=f"Помилка при перевірці рослини: {str(e)}",
+                    recommendation="Перевірте правильність даних"
+                )
+            }
+    
+    async def _check_microorganism(self, ingredient_name: str, form: str) -> Optional[Dict]:
+        """
+        Check microorganism
+        
+        IMPORTANT: ONLY allowed/forbidden check
+        DOSAGE IS NOT CHECKED (CFU not regulated)
+        """
+        try:
+            # Split into genus and species
+            parts = ingredient_name.split()
+            if len(parts) < 2:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Некоректна назва мікроорганізму (потрібно Genus Species)",
+                        recommendation="Вкажіть повну назву мікроорганізму (наприклад, 'Lactobacillus Acidophilus')"
+                    )
+                }
+            
+            genus, species = parts[0], parts[1]
+            
+            result = self.supabase.table("microorganisms").select("*").eq(
+                "genus", genus
+            ).eq("species", species).execute()
+            
+            if result.data and len(result.data) > 0:
+                return {
+                    "type": "ok",
+                    "message": "Мікроорганізм дозволений"
+                }
+            else:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Мікроорганізм не знайдений в списку дозволених",
+                        level=3,
+                        source="microorganisms",
+                        recommendation=(
+                            "Переконайтесь що мікроорганізм дозволений згідно "
+                            "Додатку 3, Розділ V Проєкту Змін до Наказу №1114"
+                        )
+                    )
+                }
+        except Exception as e:
+            logger.error(f"Error checking microorganism {ingredient_name}: {e}")
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message=f"Помилка при перевірці мікроорганізму: {str(e)}",
+                    recommendation="Перевірте правильність даних"
+                )
+            }
+    
+    async def _check_physiological(
+        self, 
+        ingredient_name: str, 
+        quantity: float, 
+        unit: str,
+        form: str
+    ) -> Optional[Dict]:
+        """
+        Check physiological substance
+        
+        Source: max_doses_table1 WHERE category='physiological'
+        """
+        # Check if quantity is provided
+        if quantity is None:
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message="Кількість речовини не вказана",
+                    recommendation="Вкажіть кількість речовини для перевірки дози"
+                )
+            }
+        
+        try:
+            result = self.supabase.table("max_doses_table1").select("*").or_(
+                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+            ).eq("category", "physiological").execute()
+            
+            if not result.data or len(result.data) == 0:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Речовина не знайдена в max_doses_table1",
+                        recommendation="Перевірте правильність назви"
+                    )
+                }
+            
+            # Take first match
+            physiological = result.data[0]
+            
+            # Log if multiple matches
+            if len(result.data) > 1:
+                logger.warning(f"Multiple matches for physiological substance '{ingredient_name}': {len(result.data)}")
+            max_dose = physiological.get("max_dose_value")
+            dose_unit = physiological.get("max_dose_unit")
+            
+            # If dose = NULL
+            if max_dose is None:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Доза не встановлена, але речовина дозволена",
+                        level=4,
+                        source="physiological_no_limit",
+                        current_dose=f"{quantity} {unit}" if quantity else None,
+                        recommendation=(
+                            "Речовина дозволена, але максимальна доза не встановлена. "
+                            "Рекомендується консультація з регуляторними органами."
+                        )
+                    )
+                }
+            
+            # Check dose
+            converted_quantity = self._convert_to_base_unit(quantity, unit, dose_unit)
+            
+            if converted_quantity > max_dose:
+                return {
+                    "type": "error",
+                    "error": DosageError(
+                        ingredient=ingredient_name,
+                        message="Перевищує максимальну дозу",
+                        level=4,
+                        source="physiological_table",
+                        current_dose=f"{quantity} {unit}",
+                        max_allowed=f"{max_dose} {dose_unit}",
+                        regulatory_source="Проєкт Змін до Наказу №1114, Додаток 3, Розділ IV",
+                        recommendation=(
+                            f"Зменшіть дозування до {max_dose} {dose_unit} або нижче."
+                        ),
+                        penalty_amount=640000
+                    )
+                }
+            else:
+                return {"type": "ok"}
+                
+        except Exception as e:
+            logger.error(f"Error checking physiological {ingredient_name}: {e}")
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message=f"Помилка при перевірці речовини: {str(e)}",
+                    recommendation="Перевірте правильність даних"
+                )
+            }
+    
+    async def _check_novel_food(
+        self, 
+        ingredient_name: str, 
+        quantity: float, 
+        unit: str,
+        form: str
+    ) -> Optional[Dict]:
+        """
+        Check Novel Food
+        
+        IMPORTANT: Table is currently empty, will be filled later
+        """
+        # Check if quantity is provided
+        if quantity is None:
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message="Кількість речовини не вказана",
+                    recommendation="Вкажіть кількість речовини для перевірки дози"
+                )
+            }
+        
+        try:
+            result = self.supabase.table("novel_foods").select("*").or_(
+                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+            ).eq("status", "active").execute()
+            
+            if not result.data or len(result.data) == 0:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Novel Food не знайдено (таблиця поки порожня)",
+                        level=4,
+                        source="novel_foods",
+                        recommendation="Таблиця novel_foods буде заповнена пізніше"
+                    )
+                }
+            
+            # Take first match
+            novel_food = result.data[0]
+            
+            # Log if multiple matches
+            if len(result.data) > 1:
+                logger.warning(f"Multiple matches for novel food '{ingredient_name}': {len(result.data)}")
+            max_dose = novel_food.get("max_daily_dose")
+            dose_unit = novel_food.get("unit")
+            
+            if max_dose:
+                converted_quantity = self._convert_to_base_unit(quantity, unit, dose_unit)
+                
+                if converted_quantity > max_dose:
+                    return {
+                        "type": "error",
+                        "error": DosageError(
+                            ingredient=ingredient_name,
+                            message="Перевищує максимальну дозу для Novel Food",
+                            level=4,
+                            source="novel_foods",
+                            current_dose=f"{quantity} {unit}",
+                            max_allowed=f"{max_dose} {dose_unit}",
+                            regulatory_source="Проєкт Змін до Наказу №1114",
+                            recommendation=(
+                                f"Зменшіть дозування до {max_dose} {dose_unit} або нижче."
+                            ),
+                            penalty_amount=640000
+                        )
+                    }
+            
+            return {"type": "ok"}
+                
+        except Exception as e:
+            logger.debug(f"Novel food not found or error: {e}")
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message="Novel Food не знайдено (таблиця поки порожня)",
+                    level=4,
+                    source="novel_foods",
+                    recommendation="Таблиця novel_foods буде заповнена пізніше"
+                )
+            }
+    
+    # ==================== HELPER METHODS ====================
+    
+    async def _get_vitamin_mineral(self, ingredient_name: str) -> Optional[Dict]:
+        """Get vitamin/mineral from allowed_vitamins_minerals"""
+        try:
+            result = self.supabase.table("allowed_vitamins_minerals").select("*").or_(
+                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+            ).execute()
+            
+            if not result.data or len(result.data) == 0:
+                return None
+            
+            # Take first match
+            data = result.data[0]
+            
+            # Log if multiple matches
+            if len(result.data) > 1:
+                logger.warning(f"Multiple matches for vitamin/mineral '{ingredient_name}': {len(result.data)}")
+            
+            return data
+        except Exception as e:
+            logger.debug(f"Vitamin/mineral not found: {ingredient_name}")
+            return None
+    
+    async def _get_efsa_limits(self, efsa_mapping: str) -> Optional[Dict]:
+        """Get EFSA limits (UL and Safe Level)"""
+        try:
+            result = self.supabase.table("efsa_limits").select(
+                "ul_value, ul_unit, safe_level_value, safe_level_unit, notes"
+            ).eq("substance_name_en", efsa_mapping).execute()
+            
+            if not result.data or len(result.data) == 0:
+                return None
+            
+            # Take first match
+            data = result.data[0]
+            
+            # Log if multiple matches
+            if len(result.data) > 1:
+                logger.warning(f"Multiple matches for EFSA limits '{efsa_mapping}': {len(result.data)}")
+            
+            return data
+        except Exception as e:
+            logger.debug(f"EFSA limits not found for {efsa_mapping}: {e}")
+            return None
+    
+    async def _get_max_dose_table1(
+        self, 
+        ingredient_name: str, 
+        categories: List[str]
+    ) -> Optional[Dict]:
+        """Get dose from Table 1 (max_doses_table1)"""
+        try:
+            result = self.supabase.table("max_doses_table1").select(
+                "max_dose_value, max_dose_unit, category, notes"
+            ).or_(
+                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+            ).in_("category", categories).execute()
+            
+            if not result.data or len(result.data) == 0:
+                return None
+            
+            # Take first match
+            data = result.data[0]
+            
+            # Log if multiple matches
+            if len(result.data) > 1:
+                logger.warning(f"Multiple matches for max_dose_table1 '{ingredient_name}': {len(result.data)}")
+            
+            return data
+        except Exception as e:
+            logger.debug(f"Max dose not found in table1 for {ingredient_name}: {e}")
+            return None
+    
+    def _check_form(
+        self, 
+        form: str, 
+        allowed_forms: List[str], 
+        ingredient_name: str
+    ) -> Optional[DosageWarning]:
+        """
+        Check form of substance
+        
+        IMPORTANT: Does NOT block, only warns
+        """
+        if not form:
+            return DosageWarning(
+                ingredient=ingredient_name,
+                message="Форма речовини не вказана",
+                recommendation=(
+                    f"Рекомендується вказати форму з дозволених: {', '.join(allowed_forms)}"
+                    if allowed_forms else "Перевірте чи форма потрібна для цієї речовини"
+                )
+            )
         
         form_lower = form.lower().strip()
         
+        # Exact match
         for allowed_form in allowed_forms:
-            allowed_lower = allowed_form.lower().strip()
-            
-            # Exact match
-            if form_lower == allowed_lower:
-                return True
-            
-            # Partial match (form contains or is contained in allowed form)
-            if form_lower in allowed_lower or allowed_lower in form_lower:
-                return True
+            if form_lower == allowed_form.lower().strip():
+                return None  # Form is correct
         
-        return False
-    
-    def _check_dose(
-        self,
-        current_quantity: float,
-        current_unit: str,
-        max_dose: float,
-        max_unit: str,
-        substance_name: str
-    ) -> Dict[str, bool]:
-        """
-        Check if current dose exceeds maximum allowed dose.
-        
-        Converts units to common base (mg) for comparison.
-        
-        Args:
-            current_quantity: Current dose quantity
-            current_unit: Current dose unit (мг, г, мкг)
-            max_dose: Maximum allowed dose
-            max_unit: Maximum dose unit
-            substance_name: Name of substance (for logging)
-            
-        Returns:
-            Dictionary with:
-                - exceeds_max: True if exceeds maximum daily dose
-                - exceeds_3x: True if exceeds triple the maximum
-                
-        Example:
-            >>> service = DosageService()
-            >>> service._check_dose(1000, "мг", 80, "мг", "Вітамін C")
-            {'exceeds_max': True, 'exceeds_3x': True}
-        """
-        try:
-            # Convert to base unit (mg)
-            current_in_mg = self._convert_to_base_unit(current_quantity, current_unit)
-            max_in_mg = self._convert_to_base_unit(max_dose, max_unit)
-            triple_limit_in_mg = max_in_mg * 3
-            
-            logger.debug(
-                f"{substance_name}: Current={current_in_mg}mg, "
-                f"Max={max_in_mg}mg, 3x={triple_limit_in_mg}mg"
+        # Form not found - warning
+        return DosageWarning(
+            ingredient=ingredient_name,
+            message=f"Вказана форма '{form}' не знайдена в списку дозволених",
+            current_dose=None,
+            recommendation=(
+                f"Перевірте чи форма правильна. Дозволені: {', '.join(allowed_forms)}"
+                if allowed_forms else "Перевірте правильність форми"
             )
-            
-            return {
-                "exceeds_max": current_in_mg > max_in_mg,
-                "exceeds_3x": current_in_mg > triple_limit_in_mg
-            }
-            
-        except Exception as e:
-            logger.error(f"Error checking dose for {substance_name}: {e}")
-            # In case of conversion error, assume no violation
-            return {"exceeds_max": False, "exceeds_3x": False}
+        )
     
-    def _convert_to_base_unit(self, quantity: float, unit: str) -> float:
+    def _convert_to_base_unit(
+        self, 
+        quantity: float, 
+        from_unit: str, 
+        to_unit: str
+    ) -> float:
         """
-        Convert quantity to base unit (mg).
-        
-        Supported units:
-        - мг, mg → 1 (base unit)
-        - г, g → 1000
-        - мкг, μg, mcg → 0.001
-        - МО, IU → 1 (assumed equivalent for simplicity)
-        - КУО, CFU → 1 (for probiotics, no conversion)
+        Convert quantity from one unit to another
         
         Args:
-            quantity: Amount in specified unit
-            unit: Unit of measurement
-            
+            quantity: Amount
+            from_unit: Source unit (e.g., "г")
+            to_unit: Target unit (e.g., "мг")
+        
         Returns:
-            Quantity in mg
-            
-        Example:
-            >>> service = DosageService()
-            >>> service._convert_to_base_unit(1, "г")
+            Converted quantity
+        
+        Examples:
+            >>> convert(1, "г", "мг")
             1000.0
-            >>> service._convert_to_base_unit(500, "мкг")
+            >>> convert(500, "мкг", "мг")
             0.5
         """
-        unit_lower = unit.lower().strip()
+        # Normalize unit names
+        from_unit_norm = self._normalize_unit(from_unit)
+        to_unit_norm = self._normalize_unit(to_unit)
         
-        # Conversion factors to mg
-        conversions = {
+        if from_unit_norm == to_unit_norm:
+            return quantity
+        
+        # Conversion through base unit (mg)
+        conversion_to_mg = {
             "мг": 1.0,
-            "mg": 1.0,
-            "г": 1000.0,
-            "g": 1000.0,
             "мкг": 0.001,
-            "μg": 0.001,
-            "mcg": 0.001,
-            "мо": 1.0,  # International Units (approximate)
-            "iu": 1.0,
-            "куо": 1.0,  # CFU (Colony Forming Units) - no conversion
-            "cfu": 1.0,
+            "г": 1000.0,
+            "кг": 1000000.0,
+            "μg_re": 0.001,  # for Vitamin A
+            "μg_vde": 0.001,  # for Vitamin D
         }
         
-        factor = conversions.get(unit_lower, 1.0)
-        result = quantity * factor
+        # Convert to mg
+        quantity_in_mg = quantity * conversion_to_mg.get(from_unit_norm, 1.0)
         
-        logger.debug(f"Converted {quantity} {unit} → {result} mg (factor={factor})")
+        # Convert from mg to target unit
+        to_mg_factor = conversion_to_mg.get(to_unit_norm, 1.0)
         
-        return result
-
-
-if __name__ == "__main__":
-    import asyncio
+        return quantity_in_mg / to_mg_factor
     
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    
-    print("╔" + "═" * 78 + "╗")
-    print("║" + " " * 25 + "DOSAGE SERVICE - DEMO" + " " * 31 + "║")
-    print("╚" + "═" * 78 + "╝")
-    print()
-    
-    async def test_dosage_service():
-        """Test dosage validation service"""
+    def _normalize_unit(self, unit: str) -> str:
+        """Normalize unit name"""
+        unit_lower = unit.lower().strip()
         
-        service = DosageService()
+        # Remove "/день" or "/day" suffixes
+        if "/" in unit_lower:
+            unit_lower = unit_lower.split("/")[0].strip()
         
-        # Test cases
-        test_ingredients = [
-            # Valid dosage
-            {
-                "name": "Вітамін C",
-                "quantity": 80.0,
-                "unit": "мг",
-                "form": "аскорбінова кислота"
-            },
-            # Exceeds max but within 3x (warning)
-            {
-                "name": "Вітамін C",
-                "quantity": 150.0,
-                "unit": "мг",
-                "form": "аскорбінова кислота"
-            },
-            # Exceeds 3x limit (critical error)
-            {
-                "name": "Вітамін A",
-                "quantity": 3000.0,
-                "unit": "мкг",
-                "form": "ретинол ацетат"
-            },
-            # Unknown substance
-            {
-                "name": "Невідома Речовина",
-                "quantity": 100.0,
-                "unit": "мг",
-                "form": ""
-            },
-            # Valid - Zinc
-            {
-                "name": "Цинк",
-                "quantity": 10.0,
-                "unit": "мг",
-                "form": "цинк цитрат"
-            },
-            # Disallowed form
-            {
-                "name": "Залізо",
-                "quantity": 14.0,
-                "unit": "мг",
-                "form": "залізо оксид"  # Not in allowed forms
-            },
-        ]
+        mapping = {
+            "mg": "мг",
+            "мг": "мг",
+            "g": "г",
+            "г": "г",
+            "mcg": "мкг",
+            "μg": "мкг",
+            "мкг": "мкг",
+            "kg": "кг",
+            "кг": "кг",
+            "μg re": "μg_re",
+            "μg vde": "μg_vde",
+            "мо": "мо",  # International Units
+            "iu": "мо",
+            "куо": "куо",  # Colony Forming Units
+            "cfu": "куо",
+        }
         
-        print("📋 Testing dosage validation with sample ingredients:")
-        print("─" * 80)
-        for i, ing in enumerate(test_ingredients, 1):
-            print(f"{i}. {ing['name']}: {ing['quantity']} {ing['unit']} ({ing['form'] or 'no form'})")
-        print()
-        
-        # Run validation
-        result = await service.check_dosages(test_ingredients)
-        
-        # Display results
-        print("=" * 80)
-        print("VALIDATION RESULTS")
-        print("=" * 80)
-        print()
-        
-        print(f"📊 Summary:")
-        print(f"   Total ingredients checked: {result.total_ingredients_checked}")
-        print(f"   Substances not found: {result.substances_not_found}")
-        print(f"   Errors: {len(result.errors)}")
-        print(f"   Warnings: {len(result.warnings)}")
-        print(f"   All valid: {'✅ YES' if result.all_valid else '❌ NO'}")
-        print()
-        
-        if result.errors:
-            print("🔴 ERRORS (Critical - 640,000 грн penalty each):")
-            print("─" * 80)
-            for i, error in enumerate(result.errors, 1):
-                print(f"\n{i}. {error.ingredient}")
-                print(f"   Message: {error.message}")
-                if error.current_dose:
-                    print(f"   Current dose: {error.current_dose}")
-                if error.max_allowed:
-                    print(f"   Max allowed: {error.max_allowed}")
-                if error.three_times_limit:
-                    print(f"   Triple limit: {error.three_times_limit}")
-                if error.current_form and error.allowed_forms:
-                    print(f"   Current form: {error.current_form}")
-                    print(f"   Allowed forms: {', '.join(error.allowed_forms)}")
-                print(f"   Recommendation: {error.recommendation}")
-                print(f"   Penalty: {error.penalty_amount:,} грн")
-            print()
-        
-        if result.warnings:
-            print("⚠️  WARNINGS:")
-            print("─" * 80)
-            for i, warning in enumerate(result.warnings, 1):
-                print(f"\n{i}. {warning.ingredient}")
-                print(f"   Message: {warning.message}")
-                if warning.current_dose:
-                    print(f"   Current dose: {warning.current_dose}")
-                if warning.max_allowed:
-                    print(f"   Max recommended: {warning.max_allowed}")
-                print(f"   Recommendation: {warning.recommendation}")
-            print()
-        
-        if result.all_valid:
-            print("✅ All dosages are within regulatory limits!")
-        else:
-            total_penalties = sum(e.penalty_amount for e in result.errors)
-            print(f"⚠️  Total potential penalties: {total_penalties:,} грн")
-        
-        print()
-        print("=" * 80)
-    
-    # Run async test
-    asyncio.run(test_dosage_service())
-    
-    print("\n✅ Demo completed!")
+        return mapping.get(unit_lower, unit_lower)

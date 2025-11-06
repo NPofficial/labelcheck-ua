@@ -52,6 +52,11 @@ class DosageError(BaseModel):
     """Dosage validation error with penalty information"""
     ingredient: str = Field(description="Ingredient name")
     message: str = Field(description="Error message")
+    
+    # 4-рівнева ієрархія
+    level: int = Field(description="Рівень ієрархії: 1=EFSA UL, 2=EFSA Safe, 3=Таблиця 1, 4=Додаток 3")
+    source: str = Field(description="Джерело: efsa_ul, efsa_safe, table1, amino_acids_table, etc.")
+    
     current_dose: Optional[str] = Field(default=None, description="Current dose (e.g., '1000 mg')")
     max_allowed: Optional[str] = Field(default=None, description="Maximum allowed dose")
     three_times_limit: Optional[str] = Field(default=None, description="Triple limit dose")
@@ -66,6 +71,11 @@ class DosageWarning(BaseModel):
     """Dosage validation warning"""
     ingredient: str = Field(description="Ingredient name")
     message: str = Field(description="Warning message")
+    
+    # 4-рівнева ієрархія (опціонально)
+    level: Optional[int] = Field(default=None, description="Рівень ієрархії (якщо застосовно)")
+    source: Optional[str] = Field(default=None, description="Джерело даних")
+    
     current_dose: Optional[str] = Field(default=None, description="Current dose")
     max_allowed: Optional[str] = Field(default=None, description="Maximum recommended dose")
     recommendation: str = Field(description="Recommendation")
