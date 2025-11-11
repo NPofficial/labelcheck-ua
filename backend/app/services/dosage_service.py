@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Optional, Tuple
 
 from app.db.supabase_client import SupabaseClient
+from app.services.substance_mapper_service import SubstanceMapperService
 from app.api.schemas.validation import DosageCheckResult, DosageError, DosageWarning
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,8 @@ class DosageService:
     def __init__(self):
         """Initialize dosage service with Supabase client"""
         self.supabase = SupabaseClient().client
+        self.mapper = SubstanceMapperService()
+        logger.info("DosageService initialized with SubstanceMapperService")
     
     async def check_dosages(self, ingredients: List[Dict]) -> DosageCheckResult:
         """
@@ -233,105 +236,119 @@ class DosageService:
     # ==================== CHECKING METHODS FOR EACH TYPE ====================
     
     async def _check_vitamin_mineral(
-        self, 
-        ingredient_name: str, 
-        quantity: float, 
+        self,
+        ingredient_name: str,
+        quantity: Optional[float],
         unit: str,
-        form: str
+        form: Optional[str],
     ) -> Optional[Dict]:
         """
-        4-level hierarchy for vitamins/minerals
-        
-        Level 1: EFSA Upper Limit (UL)
-        Level 2: EFSA Safe Level
-        Level 3: Table 1 (max_doses_table1)
-        Level 4: Warning if not found
+        Check vitamin/mineral dosage with elemental conversion
+
+        4-level hierarchy:
+            Level 1: EFSA Upper Limit (UL)
+            Level 2: EFSA Safe Level
+            Level 3: Table 1 (max_doses_table1)
+            Level 4: Warning if not found
         """
-        # Check if quantity is provided
-        if quantity is None:
+        parsed = await self.mapper.parse_ingredient(ingredient_name, quantity, unit)
+        base_substance = parsed["base_substance"]
+        elemental_quantity = parsed["elemental_quantity"]
+        coefficient_used = parsed["coefficient_used"]
+
+        logger.info(
+            "Mapped ingredient '%s' (%s %s) -> %s (elemental: %s %s, coefficient: %s)",
+            ingredient_name,
+            quantity,
+            unit,
+            base_substance,
+            elemental_quantity,
+            unit,
+            coefficient_used,
+        )
+
+        if elemental_quantity is None:
             return {
                 "type": "warning",
                 "warning": DosageWarning(
-                    ingredient=ingredient_name,
+                    ingredient=base_substance,
                     message="Кількість речовини не вказана",
-                    recommendation="Вкажіть кількість речовини для перевірки дози"
-                )
+                    recommendation="Вкажіть кількість речовини для перевірки дози",
+                ),
             }
-        
-        # Step 1: Find in allowed_vitamins_minerals
-        vitamin_mineral = await self._get_vitamin_mineral(ingredient_name)
+
+        vitamin_mineral = await self._get_vitamin_mineral(base_substance)
         if not vitamin_mineral:
             return {
                 "type": "warning",
                 "warning": DosageWarning(
-                    ingredient=ingredient_name,
+                    ingredient=base_substance,
                     message="Вітамін/мінерал не знайдений в allowed_vitamins_minerals",
-                    recommendation="Перевірте правильність назви"
-                )
+                    recommendation="Перевірте правильність назви",
+                ),
             }
-        
-        # Check form (warning only, not blocking)
-        form_warning = self._check_form(form, vitamin_mineral.get("allowed_forms", []), ingredient_name)
-        
-        # Step 2: Try EFSA through efsa_mapping
+
+        form_warning = self._check_form(
+            form,
+            vitamin_mineral.get("allowed_forms", []),
+            base_substance,
+        )
+
+        display_dose = f"{elemental_quantity} {unit}"
+
         if vitamin_mineral.get("efsa_mapping"):
             efsa_data = await self._get_efsa_limits(vitamin_mineral["efsa_mapping"])
-            
+
             if efsa_data:
-                # LEVEL 1: EFSA UL
                 if efsa_data.get("ul_value") is not None:
                     converted_quantity = self._convert_to_base_unit(
-                        quantity, unit, efsa_data["ul_unit"]
+                        elemental_quantity, unit, efsa_data["ul_unit"]
                     )
-                    
+
                     if converted_quantity > efsa_data["ul_value"]:
                         error = DosageError(
-                            ingredient=ingredient_name,
+                            ingredient=base_substance,
                             message="Перевищує EFSA Upper Limit (UL)",
                             level=1,
                             source="efsa_ul",
-                            current_dose=f"{quantity} {unit}",
+                            current_dose=display_dose,
                             max_allowed=f"{efsa_data['ul_value']} {efsa_data['ul_unit']}",
                             regulatory_source="EFSA 2024",
                             recommendation=(
                                 f"Зменшіть дозування до {efsa_data['ul_value']} {efsa_data['ul_unit']} "
-                                f"або нижче. Поточна доза {quantity} {unit} перевищує допустимий "
-                                "верхній рівень споживання (UL) встановлений EFSA."
+                                "або нижче. Поточна доза перевищує допустимий верхній рівень споживання (UL)."
                             ),
-                            penalty_amount=640000
+                            penalty_amount=640000,
                         )
                         result = {"type": "error", "error": error}
                         if form_warning:
                             result["form_warning"] = form_warning
                         return result
                     else:
-                        # Valid - return OK with form warning if exists
                         result = {"type": "ok"}
                         if form_warning:
                             result["form_warning"] = form_warning
                         return result
-                
-                # LEVEL 2: EFSA Safe Level
+
                 if efsa_data.get("safe_level_value") is not None:
                     converted_quantity = self._convert_to_base_unit(
-                        quantity, unit, efsa_data["safe_level_unit"]
+                        elemental_quantity, unit, efsa_data["safe_level_unit"]
                     )
-                    
+
                     if converted_quantity > efsa_data["safe_level_value"]:
                         error = DosageError(
-                            ingredient=ingredient_name,
+                            ingredient=base_substance,
                             message="Перевищує EFSA Safe Level",
                             level=2,
                             source="efsa_safe",
-                            current_dose=f"{quantity} {unit}",
+                            current_dose=display_dose,
                             max_allowed=f"{efsa_data['safe_level_value']} {efsa_data['safe_level_unit']}",
                             regulatory_source="EFSA 2024",
                             recommendation=(
                                 f"Зменшіть дозування до {efsa_data['safe_level_value']} "
-                                f"{efsa_data['safe_level_unit']} або нижче. Поточна доза {quantity} {unit} "
-                                "перевищує безпечний рівень споживання встановлений EFSA."
+                                f"{efsa_data['safe_level_unit']} або нижче. Поточна доза перевищує безпечний рівень."
                             ),
-                            penalty_amount=640000
+                            penalty_amount=640000,
                         )
                         result = {"type": "error", "error": error}
                         if form_warning:
@@ -342,32 +359,31 @@ class DosageService:
                         if form_warning:
                             result["form_warning"] = form_warning
                         return result
-        
-        # LEVEL 3: Table 1 (max_doses_table1)
+
         table1_dose = await self._get_max_dose_table1(
-            ingredient_name, 
-            ["vitamin", "mineral"]
+            base_substance,
+            ["vitamin", "mineral"],
         )
-        
+
         if table1_dose and table1_dose.get("max_dose_value") is not None:
             converted_quantity = self._convert_to_base_unit(
-                quantity, unit, table1_dose["max_dose_unit"]
+                elemental_quantity, unit, table1_dose["max_dose_unit"]
             )
-            
+
             if converted_quantity > table1_dose["max_dose_value"]:
                 error = DosageError(
-                    ingredient=ingredient_name,
+                    ingredient=base_substance,
                     message="Перевищує максимальну дозу Таблиці 1",
                     level=3,
                     source="table1",
-                    current_dose=f"{quantity} {unit}",
+                    current_dose=display_dose,
                     max_allowed=f"{table1_dose['max_dose_value']} {table1_dose['max_dose_unit']}",
                     regulatory_source="Проєкт Змін до Наказу №1114, Додаток 1, Таблиця 1",
                     recommendation=(
                         f"Зменшіть дозування до {table1_dose['max_dose_value']} "
                         f"{table1_dose['max_dose_unit']} або нижче."
                     ),
-                    penalty_amount=640000
+                    penalty_amount=640000,
                 )
                 result = {"type": "error", "error": error}
                 if form_warning:
@@ -378,21 +394,19 @@ class DosageService:
                 if form_warning:
                     result["form_warning"] = form_warning
                 return result
-        
-        # LEVEL 4: Not found in any level
+
         warning = DosageWarning(
-            ingredient=ingredient_name,
+            ingredient=base_substance,
             message="Доза не встановлена в EFSA та Таблиці 1",
             level=4,
             source="unknown",
-            current_dose=f"{quantity} {unit}" if quantity else None,
+            current_dose=display_dose,
             recommendation=(
                 "Доза не знайдена в жодному з рівнів ієрархії. "
                 "Перевірте чи речовина правильно вказана та чи встановлена для неї доза."
-            )
+            ),
         )
-        
-        # If form warning exists, return it separately (will be added to warnings)
+
         result = {"type": "warning", "warning": warning}
         if form_warning:
             result["form_warning"] = form_warning
