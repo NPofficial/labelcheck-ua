@@ -55,8 +55,50 @@ class DosageService:
             quantity = ingredient.get("quantity")
             unit = ingredient.get("unit", "мг")
             form = ingredient.get("form", "")
+            ing_type = ingredient.get("type", "").lower() if ingredient.get("type") else ""
             
             logger.debug(f"Checking ingredient: {ingredient_name} ({quantity} {unit})")
+            
+            # ПРОПУСТИТИ excipients та рослини (не перевіряти дози)
+            if ing_type in ["excipient", "plant"]:
+                # Додаткова інформація про екстракти
+                is_extract = ingredient.get("is_extract", False)
+                ratio = ingredient.get("ratio")
+                
+                if ing_type == "plant" and is_extract:
+                    logger.info(f"🌿 Skipping plant extract: {ingredient_name} (ratio: {ratio or 'N/A'})")
+                else:
+                    logger.info(f"⏭️ Skipping {ing_type}: {ingredient_name}")
+                continue
+            
+            # Парсити інгредієнт через mapper (щоб дізнатись тип) - для додаткової перевірки
+            parsed = await self.mapper.parse_ingredient(ingredient_name, quantity, unit)
+            
+            # Якщо excipient - пропустити перевірку (додаткова перевірка)
+            if parsed.get("type") == "excipient":
+                logger.info(f"⏭️ Skipping dosage check for excipient: {ingredient_name}")
+                continue  # Перейти до наступного інгредієнта
+            
+            # ДОДАТКОВА ПЕРЕВІРКА: Якщо parsed type == "plant" → одразу викликати _check_plant()
+            # Це запобігає неправильним warnings для рослин
+            if parsed.get("type") == "plant":
+                is_extract = parsed.get("is_extract", False)
+                ratio = parsed.get("ratio")
+                
+                if is_extract:
+                    logger.info(f"🌿 Skipping dosage check for plant extract: {ingredient_name} (ratio: {ratio or 'N/A'})")
+                else:
+                    logger.info(f"🌿 Skipping dosage check for plant: {ingredient_name}")
+                
+                # Перевірити чи рослина дозволена (але НЕ перевіряти дози!)
+                plant_result = await self._check_plant(ingredient_name, form)
+                
+                if plant_result:
+                    if plant_result.get("type") == "warning":
+                        warnings.append(plant_result["warning"])
+                    # Якщо type == "ok" → все добре, нічого не додаємо
+                
+                continue  # Перейти до наступного інгредієнта
             
             # PRIORITY #1: Check banned substances FIRST!
             if await self._is_banned_substance(ingredient_name):
@@ -296,69 +338,74 @@ class DosageService:
 
         display_dose = f"{elemental_quantity} {unit}"
 
+        # Використовуємо base_substance для LIKE пошуку в efsa_limits
+        # Можна також спробувати efsa_mapping якщо є
+        efsa_search_name = base_substance
         if vitamin_mineral.get("efsa_mapping"):
-            efsa_data = await self._get_efsa_limits(vitamin_mineral["efsa_mapping"])
+            efsa_search_name = vitamin_mineral["efsa_mapping"]
+        
+        efsa_data = await self._get_efsa_limits(efsa_search_name)
 
-            if efsa_data:
-                if efsa_data.get("ul_value") is not None:
-                    converted_quantity = self._convert_to_base_unit(
-                        elemental_quantity, unit, efsa_data["ul_unit"]
+        if efsa_data:
+            if efsa_data.get("ul_value") is not None:
+                converted_quantity = self._convert_to_base_unit(
+                    elemental_quantity, unit, efsa_data["ul_unit"]
+                )
+
+                if converted_quantity > efsa_data["ul_value"]:
+                    error = DosageError(
+                        ingredient=base_substance,
+                        message="Перевищує EFSA Upper Limit (UL)",
+                        level=1,
+                        source="efsa_ul",
+                        current_dose=display_dose,
+                        max_allowed=f"{efsa_data['ul_value']} {efsa_data['ul_unit']}",
+                        regulatory_source="EFSA 2024",
+                        recommendation=(
+                            f"Зменшіть дозування до {efsa_data['ul_value']} {efsa_data['ul_unit']} "
+                            "або нижче. Поточна доза перевищує допустимий верхній рівень споживання (UL)."
+                        ),
+                        penalty_amount=640000,
                     )
+                    result = {"type": "error", "error": error}
+                    if form_warning:
+                        result["form_warning"] = form_warning
+                    return result
+                else:
+                    result = {"type": "ok"}
+                    if form_warning:
+                        result["form_warning"] = form_warning
+                    return result
 
-                    if converted_quantity > efsa_data["ul_value"]:
-                        error = DosageError(
-                            ingredient=base_substance,
-                            message="Перевищує EFSA Upper Limit (UL)",
-                            level=1,
-                            source="efsa_ul",
-                            current_dose=display_dose,
-                            max_allowed=f"{efsa_data['ul_value']} {efsa_data['ul_unit']}",
-                            regulatory_source="EFSA 2024",
-                            recommendation=(
-                                f"Зменшіть дозування до {efsa_data['ul_value']} {efsa_data['ul_unit']} "
-                                "або нижче. Поточна доза перевищує допустимий верхній рівень споживання (UL)."
-                            ),
-                            penalty_amount=640000,
-                        )
-                        result = {"type": "error", "error": error}
-                        if form_warning:
-                            result["form_warning"] = form_warning
-                        return result
-                    else:
-                        result = {"type": "ok"}
-                        if form_warning:
-                            result["form_warning"] = form_warning
-                        return result
+            if efsa_data.get("safe_level_value") is not None:
+                converted_quantity = self._convert_to_base_unit(
+                    elemental_quantity, unit, efsa_data["safe_level_unit"]
+                )
 
-                if efsa_data.get("safe_level_value") is not None:
-                    converted_quantity = self._convert_to_base_unit(
-                        elemental_quantity, unit, efsa_data["safe_level_unit"]
+                if converted_quantity > efsa_data["safe_level_value"]:
+                    error = DosageError(
+                        ingredient=base_substance,
+                        message="Перевищує EFSA Safe Level",
+                        level=2,
+                        source="efsa_safe",
+                        current_dose=display_dose,
+                        max_allowed=f"{efsa_data['safe_level_value']} {efsa_data['safe_level_unit']}",
+                        regulatory_source="EFSA 2024",
+                        recommendation=(
+                            f"Зменшіть дозування до {efsa_data['safe_level_value']} "
+                            f"{efsa_data['safe_level_unit']} або нижче. Поточна доза перевищує безпечний рівень."
+                        ),
+                        penalty_amount=640000,
                     )
-
-                    if converted_quantity > efsa_data["safe_level_value"]:
-                        error = DosageError(
-                            ingredient=base_substance,
-                            message="Перевищує EFSA Safe Level",
-                            level=2,
-                            source="efsa_safe",
-                            current_dose=display_dose,
-                            max_allowed=f"{efsa_data['safe_level_value']} {efsa_data['safe_level_unit']}",
-                            regulatory_source="EFSA 2024",
-                            recommendation=(
-                                f"Зменшіть дозування до {efsa_data['safe_level_value']} "
-                                f"{efsa_data['safe_level_unit']} або нижче. Поточна доза перевищує безпечний рівень."
-                            ),
-                            penalty_amount=640000,
-                        )
-                        result = {"type": "error", "error": error}
-                        if form_warning:
-                            result["form_warning"] = form_warning
-                        return result
-                    else:
-                        result = {"type": "ok"}
-                        if form_warning:
-                            result["form_warning"] = form_warning
-                        return result
+                    result = {"type": "error", "error": error}
+                    if form_warning:
+                        result["form_warning"] = form_warning
+                    return result
+                else:
+                    result = {"type": "ok"}
+                    if form_warning:
+                        result["form_warning"] = form_warning
+                    return result
 
         table1_dose = await self._get_max_dose_table1(
             base_substance,
@@ -795,47 +842,104 @@ class DosageService:
     # ==================== HELPER METHODS ====================
     
     async def _get_vitamin_mineral(self, ingredient_name: str) -> Optional[Dict]:
-        """Get vitamin/mineral from allowed_vitamins_minerals"""
+        """LIKE пошук в allowed_vitamins_minerals"""
         try:
-            result = self.supabase.table("allowed_vitamins_minerals").select("*").or_(
-                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
-            ).execute()
+            # Normalize: видалити зайві пробіли
+            substance_name = " ".join(ingredient_name.split()).strip()
+            pattern = f"{substance_name}%"
             
-            if not result.data or len(result.data) == 0:
-                return None
+            # LIKE пошук по початку назви (case-insensitive)
+            # Спробувати пошук по substance_name_ua
+            try:
+                result = (
+                    self.supabase.table("allowed_vitamins_minerals")
+                    .select("*")
+                    .ilike("substance_name_ua", pattern)
+                    .limit(1)
+                    .execute()
+                )
+                
+                if result.data:
+                    found_name = result.data[0].get('substance_name_ua', 'N/A')
+                    logger.info(f"✅ Vitamin/mineral found (UA): '{substance_name}' → '{found_name}'")
+                    return result.data[0]
+            except Exception as e1:
+                logger.debug(f"Search by substance_name_ua failed: {e1}")
             
-            # Take first match
-            data = result.data[0]
+            # Якщо не знайдено по UA, спробувати по EN
+            try:
+                result = (
+                    self.supabase.table("allowed_vitamins_minerals")
+                    .select("*")
+                    .ilike("substance_name_en", pattern)
+                    .limit(1)
+                    .execute()
+                )
+                
+                if result.data:
+                    found_name = result.data[0].get('substance_name_ua', 'N/A')
+                    logger.info(f"✅ Vitamin/mineral found (EN): '{substance_name}' → '{found_name}'")
+                    return result.data[0]
+            except Exception as e2:
+                logger.debug(f"Search by substance_name_en failed: {e2}")
             
-            # Log if multiple matches
-            if len(result.data) > 1:
-                logger.warning(f"Multiple matches for vitamin/mineral '{ingredient_name}': {len(result.data)}")
+            return None
             
-            return data
         except Exception as e:
-            logger.debug(f"Vitamin/mineral not found: {ingredient_name}")
+            logger.error(f"Error getting vitamin/mineral info for {ingredient_name}: {e}")
             return None
     
-    async def _get_efsa_limits(self, efsa_mapping: str) -> Optional[Dict]:
-        """Get EFSA limits (UL and Safe Level)"""
+    async def _get_efsa_limits(self, substance_name: str) -> Optional[Dict]:
+        """
+        LIKE пошук по початку назви (глобальне рішення).
+        Знайде: "Магній", "Магній (цитрат)", "Магній будь-що"
+        """
         try:
-            result = self.supabase.table("efsa_limits").select(
-                "ul_value, ul_unit, safe_level_value, safe_level_unit, notes"
-            ).eq("substance_name_en", efsa_mapping).execute()
+            # Normalize: видалити зайві пробіли
+            substance_name = " ".join(substance_name.split()).strip()
+            pattern = f"{substance_name}%"
             
-            if not result.data or len(result.data) == 0:
-                return None
+            # LIKE пошук по початку назви (case-insensitive)
+            # Використовуємо правильний синтаксис для Supabase Python SDK
+            try:
+                # Спробувати пошук по substance_name_ua
+                result = (
+                    self.supabase.table("efsa_limits")
+                    .select("substance_name_ua, substance_name_en, ul_value, ul_unit, safe_level_value, safe_level_unit, notes")
+                    .ilike("substance_name_ua", pattern)
+                    .limit(1)
+                    .execute()
+                )
+                
+                if result.data:
+                    found_name = result.data[0].get('substance_name_ua', 'N/A')
+                    logger.info(f"✅ EFSA limit found (UA): '{substance_name}' → '{found_name}'")
+                    return result.data[0]
+            except Exception as e1:
+                logger.debug(f"Search by substance_name_ua failed: {e1}")
             
-            # Take first match
-            data = result.data[0]
+            # Якщо не знайдено по UA, спробувати по EN
+            try:
+                result = (
+                    self.supabase.table("efsa_limits")
+                    .select("substance_name_ua, substance_name_en, ul_value, ul_unit, safe_level_value, safe_level_unit, notes")
+                    .ilike("substance_name_en", pattern)
+                    .limit(1)
+                    .execute()
+                )
+                
+                if result.data:
+                    found_name = result.data[0].get('substance_name_ua', 'N/A')
+                    logger.info(f"✅ EFSA limit found (EN): '{substance_name}' → '{found_name}'")
+                    return result.data[0]
+            except Exception as e2:
+                logger.debug(f"Search by substance_name_en failed: {e2}")
             
-            # Log if multiple matches
-            if len(result.data) > 1:
-                logger.warning(f"Multiple matches for EFSA limits '{efsa_mapping}': {len(result.data)}")
+            logger.info(f"⚠️ EFSA limit not found for: {substance_name}")
+            return None
             
-            return data
         except Exception as e:
-            logger.debug(f"EFSA limits not found for {efsa_mapping}: {e}")
+            logger.error(f"Error getting EFSA limits for {substance_name}: {e}")
             return None
     
     async def _get_max_dose_table1(
@@ -843,27 +947,53 @@ class DosageService:
         ingredient_name: str, 
         categories: List[str]
     ) -> Optional[Dict]:
-        """Get dose from Table 1 (max_doses_table1)"""
+        """LIKE пошук в max_doses_table1"""
         try:
-            result = self.supabase.table("max_doses_table1").select(
-                "max_dose_value, max_dose_unit, category, notes"
-            ).or_(
-                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
-            ).in_("category", categories).execute()
+            # Normalize: видалити зайві пробіли
+            substance_name = " ".join(ingredient_name.split()).strip()
+            pattern = f"{substance_name}%"
             
-            if not result.data or len(result.data) == 0:
-                return None
+            # LIKE пошук по початку назви (case-insensitive)
+            # Спробувати пошук по substance_name_ua
+            try:
+                result = (
+                    self.supabase.table("max_doses_table1")
+                    .select("*")
+                    .ilike("substance_name_ua", pattern)
+                    .in_("category", categories)
+                    .limit(1)
+                    .execute()
+                )
+                
+                if result.data:
+                    found_name = result.data[0].get('substance_name_ua', 'N/A')
+                    logger.info(f"✅ Table1 dose found (UA): '{substance_name}' → '{found_name}'")
+                    return result.data[0]
+            except Exception as e1:
+                logger.debug(f"Search by substance_name_ua failed: {e1}")
             
-            # Take first match
-            data = result.data[0]
+            # Якщо не знайдено по UA, спробувати по EN
+            try:
+                result = (
+                    self.supabase.table("max_doses_table1")
+                    .select("*")
+                    .ilike("substance_name_en", pattern)
+                    .in_("category", categories)
+                    .limit(1)
+                    .execute()
+                )
+                
+                if result.data:
+                    found_name = result.data[0].get('substance_name_ua', 'N/A')
+                    logger.info(f"✅ Table1 dose found (EN): '{substance_name}' → '{found_name}'")
+                    return result.data[0]
+            except Exception as e2:
+                logger.debug(f"Search by substance_name_en failed: {e2}")
             
-            # Log if multiple matches
-            if len(result.data) > 1:
-                logger.warning(f"Multiple matches for max_dose_table1 '{ingredient_name}': {len(result.data)}")
+            return None
             
-            return data
         except Exception as e:
-            logger.debug(f"Max dose not found in table1 for {ingredient_name}: {e}")
+            logger.error(f"Error getting Table1 dose for {ingredient_name}: {e}")
             return None
     
     def _check_form(
