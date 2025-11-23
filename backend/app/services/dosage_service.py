@@ -74,6 +74,11 @@ class DosageService:
             # Парсити інгредієнт через mapper (щоб дізнатись тип) - для додаткової перевірки
             parsed = await self.mapper.parse_ingredient(ingredient_name, quantity, unit)
             
+            # Використати form з parsed, якщо він є (він знайдений mapper'ом)
+            if parsed.get("form"):
+                form = parsed.get("form")
+                logger.debug(f"✅ Using form from mapper: '{form}' for {ingredient_name}")
+            
             # Якщо excipient - пропустити перевірку (додаткова перевірка)
             if parsed.get("type") == "excipient":
                 logger.info(f"⏭️ Skipping dosage check for excipient: {ingredient_name}")
