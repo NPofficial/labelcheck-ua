@@ -9,6 +9,58 @@ from app.api.schemas.compliance import ComplianceError
 logger = logging.getLogger(__name__)
 
 
+def _check_allergen_compliance(label_data: Dict) -> Any:
+    """
+    Перевірка відповідності алергенів (3 сценарії)
+    
+    Сценарій A: Є алергени в складі + є фраза (allergen_statement) → True
+    Сценарій B: Є алергени в складі + НЕМАЄ фрази → False (КРИТИЧНА ПОМИЛКА)
+    Сценарій C: Немає алергенів в складі → True (фраза не потрібна)
+    """
+    # 1. Знайти алергени в ingredients
+    ingredients = label_data.get("ingredients", [])
+    allergens_list = label_data.get("allergens", [])
+    
+    # Ключові слова для пошуку алергенів
+    allergen_keywords = [
+        "соя", "soy", "молоко", "milk", "глютен", "gluten", 
+        "яйце", "egg", "риба", "fish", "арахіс", "peanut",
+        "горіх", "nut", "кунжут", "sesame", "селера", "celery",
+        "гірчиця", "mustard", "сульфіти", "sulfites", "люпин", "lupin",
+        "молюски", "molluscs", "ракоподібні", "crustaceans"
+    ]
+    
+    has_allergens_in_ingredients = False
+    
+    # Перевірити ingredients на наявність алергенів
+    for ingredient in ingredients:
+        ingredient_name = str(ingredient.get("name", "")).lower()
+        for keyword in allergen_keywords:
+            if keyword.lower() in ingredient_name:
+                has_allergens_in_ingredients = True
+                break
+        if has_allergens_in_ingredients:
+            break
+    
+    # Перевірити також список allergens
+    if allergens_list and len(allergens_list) > 0:
+        has_allergens_in_ingredients = True
+    
+    # 2. Отримати allergen_statement
+    allergen_statement = label_data.get("allergen_statement")
+    has_statement = allergen_statement is not None and len(str(allergen_statement).strip()) > 0
+    
+    # 3. Логіка перевірки
+    if has_allergens_in_ingredients:
+        # Є алергени в складі
+        if has_statement:
+            return True  # Сценарій A: все OK
+        else:
+            return False  # Сценарій B: КРИТИЧНА ПОМИЛКА - немає фрази
+    else:
+        return True  # Сценарій C: немає алергенів → фраза не потрібна
+
+
 FIELD_MAPPING: Dict[str, Callable[[Dict], Any]] = {
     "product_name_label": lambda d: d.get("mandatory_phrases", {}).get("has_dietary_supplement_label"),
     "edrpou_code": lambda d: d.get("operator", {}).get("edrpou"),
@@ -21,8 +73,8 @@ FIELD_MAPPING: Dict[str, Callable[[Dict], Any]] = {
     "keep_away_children": lambda d: d.get("mandatory_phrases", {}).get("has_keep_away_children"),
     "expiry_date": lambda d: d.get("shelf_life"),
     "net_quantity": lambda d: d.get("product_info", {}).get("quantity") or d.get("quantity"),
-    "batch_number": lambda d: None,  # TODO: Claude не витягує batch number
-    "allergen_info": lambda d: None,  # TODO: Claude не витягує окремо алергени
+    "batch_number": lambda d: d.get("product_info", {}).get("batch_number") or d.get("batch_number"),
+    "allergen_info": lambda d: _check_allergen_compliance(d),
 }
 
 
@@ -65,6 +117,10 @@ class MandatoryFieldsService:
         for record in records:
             field_name = record.get("field_name")
             field_name_ua = record.get("field_name_ua", field_name)
+            
+            # Пропустити batch_number якщо criticality = "warning" (не критичне поле)
+            if field_name == "batch_number" and record.get("criticality") == "warning":
+                continue
 
             value = self._evaluate_field(field_name, label_data)
 

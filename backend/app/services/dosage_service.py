@@ -176,7 +176,11 @@ class DosageService:
                     # Valid dose, but check for form warning
                     if result.get("form_warning"):
                         warnings.append(result["form_warning"])
-                # "ok" type means no errors/warnings (except form)
+                    # Info message (не помилка, але інформація для користувача)
+                    if result.get("info"):
+                        # Додати info до warnings, але з level=None (не критично)
+                        warnings.append(result["info"])
+                # "ok" type means no errors/warnings (except form and info)
         
         # Determine if all dosages are valid
         all_valid = len(errors) == 0
@@ -302,9 +306,10 @@ class DosageService:
         base_substance = parsed["base_substance"]
         elemental_quantity = parsed["elemental_quantity"]
         coefficient_used = parsed["coefficient_used"]
+        parsed_form = parsed.get("form")  # Форма знайдена mapper'ом в substance_form_conversions
 
         logger.info(
-            "Mapped ingredient '%s' (%s %s) -> %s (elemental: %s %s, coefficient: %s)",
+            "Mapped ingredient '%s' (%s %s) -> %s (elemental: %s %s, coefficient: %s, form: %s)",
             ingredient_name,
             quantity,
             unit,
@@ -312,6 +317,7 @@ class DosageService:
             elemental_quantity,
             unit,
             coefficient_used,
+            parsed_form or "None",
         )
 
         if elemental_quantity is None:
@@ -335,8 +341,18 @@ class DosageService:
                 ),
             }
 
+        # КРИТИЧНО: Якщо форма знайдена в substance_form_conversions (через mapper),
+        # то вона автоматично дозволена - не перевіряти allowed_forms
+        # allowed_forms в allowed_vitamins_minerals часто порожній, але форми є в substance_form_conversions
+        if parsed_form and parsed.get("matched"):
+            logger.debug(f"✅ Form '{parsed_form}' found in substance_form_conversions - skipping allowed_forms check")
+            form_warning = None
+        else:
+            # Перевірити форму тільки якщо вона не знайдена в substance_form_conversions
+            # Використати form з ingredient або parsed_form
+            form_to_check = form or parsed_form
         form_warning = self._check_form(
-            form,
+                form_to_check,
             vitamin_mineral.get("allowed_forms", []),
             base_substance,
         )
@@ -447,22 +463,46 @@ class DosageService:
                     result["form_warning"] = form_warning
                 return result
 
-        warning = DosageWarning(
-            ingredient=base_substance,
-            message="Доза не встановлена в EFSA та Таблиці 1",
-            level=4,
-            source="unknown",
-            current_dose=display_dose,
-            recommendation=(
-                "Доза не знайдена в жодному з рівнів ієрархії. "
-                "Перевірте чи речовина правильно вказана та чи встановлена для неї доза."
-            ),
-        )
-
-        result = {"type": "warning", "warning": warning}
-        if form_warning:
-            result["form_warning"] = form_warning
-        return result
+        # Якщо речовина знайдена в allowed_vitamins_minerals (дозволена),
+        # але немає обмежень в EFSA та Таблиці 1 - це нормально
+        # Показуємо інформаційне повідомлення, але не як помилку
+        if vitamin_mineral:
+            # Речовина дозволена, але обмежень немає - це OK
+            info_message = DosageWarning(
+                ingredient=base_substance,
+                message="Обмежень по дозуванню немає, але будьте обережні",
+                level=None,  # Не рівень помилки
+                source="no_limit_available",
+                current_dose=display_dose,
+                recommendation=(
+                    "Речовина дозволена для використання в дієтичних добавках, "
+                    "але максимальна доза не встановлена в EFSA та Таблиці 1. "
+                    "Рекомендується дотримуватися загальних принципів безпеки та "
+                    "консультуватися з лікарем при необхідності."
+                ),
+            )
+            # Повертаємо як "ok" з info message (не warning, не error)
+            result = {"type": "ok", "info": info_message}
+            if form_warning:
+                result["form_warning"] = form_warning
+            return result
+        else:
+            # Речовина не знайдена взагалі - це warning
+            warning = DosageWarning(
+                ingredient=base_substance,
+                message="Доза не встановлена в EFSA та Таблиці 1",
+                level=4,
+                source="unknown",
+                current_dose=display_dose,
+                recommendation=(
+                    "Доза не знайдена в жодному з рівнів ієрархії. "
+                    "Перевірте чи речовина правильно вказана та чи встановлена для неї доза."
+                ),
+            )
+            result = {"type": "warning", "warning": warning}
+            if form_warning:
+                result["form_warning"] = form_warning
+            return result
     
     async def _check_amino_acid(
         self, 

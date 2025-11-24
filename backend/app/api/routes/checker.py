@@ -14,6 +14,7 @@ from app.services.dosage_service import DosageService
 from app.services.report_service import ReportService
 from app.services.forbidden_phrases_service import ForbiddenPhrasesService
 from app.services.mandatory_fields_service import MandatoryFieldsService
+from app.services.substance_mapper_service import SubstanceMapperService
 from app.api.schemas.validation import DosageCheckResult
 from app.api.schemas.compliance import ComplianceCheckResult
 from app.db.supabase_client import SupabaseClient
@@ -33,6 +34,7 @@ dosage_service = DosageService()
 report_service = ReportService()
 forbidden_service = ForbiddenPhrasesService()
 mandatory_service = MandatoryFieldsService()
+mapper_service = SubstanceMapperService()
 supabase = SupabaseClient().client
 
 
@@ -102,8 +104,11 @@ async def quick_check(
             "product_info": {
                 "name": label_data.get("product_name"),
                 "form": label_data.get("form"),
-                "quantity": label_data.get("quantity")
+                "quantity": label_data.get("quantity"),
+                "batch_number": label_data.get("batch_number")
             },
+            "allergens": label_data.get("allergens", []),
+            "allergen_statement": label_data.get("allergen_statement"),
             "mandatory_phrases": label_data.get("mandatory_phrases"),
             "full_text": label_data.get("full_text"),
             "operator": label_data.get("operator"),
@@ -159,9 +164,71 @@ async def full_check(
         
         logger.info(f"Full check started: {check_id} ({len(ingredients)} ingredients)")
         
+        # Парсити інгредієнти через mapper для статистики та обогачення даних
+        parsed_ingredients = []
+        for ingredient in ingredients:
+            parsed = await mapper_service.parse_ingredient(
+                ingredient.get("name"),
+                ingredient.get("quantity"),
+                ingredient.get("unit", "мг")
+            )
+            
+            # Додати результат парсингу до інгредієнта
+            # found = True якщо matched = True АБО є source (excipient, plant тощо)
+            is_found = parsed.get("matched", False) or parsed.get("source") is not None
+            
+            ingredient_with_parsed = {
+                **ingredient,
+                "found": is_found,
+                "base_substance": parsed.get("base_substance"),
+                "form": parsed.get("form"),  # Форма речовини (наприклад, "Цитрат", "Піридоксину гідрохлорид")
+                "source": parsed.get("source"),
+                "type": parsed.get("type", ingredient.get("type")),
+                "elemental_quantity": parsed.get("elemental_quantity"),
+                "coefficient_used": parsed.get("coefficient_used"),
+                "is_extract": parsed.get("is_extract", False),
+                "extract_type": parsed.get("extract_type"),
+                "ratio": parsed.get("ratio")
+            }
+            parsed_ingredients.append(ingredient_with_parsed)
+        
+        # Рахувати статистику
+        substances_not_found = sum(1 for ing in parsed_ingredients if not ing.get("found", False))
+        
+        logger.info(f"Parsed ingredients: {len(parsed_ingredients)} total, {substances_not_found} not found")
+        
+        # Підготувати інгредієнти для DosageService з base_substance та elemental_quantity
+        # КРИТИЧНО: EFSA Upper Limits встановлені для ЕЛЕМЕНТАРНИХ форм, не для сполук!
+        # Наприклад: "Магній" (base_substance) з elemental_quantity = 100 мг,
+        # а не "цитрат магнію" (форма) з quantity = 500 мг
+        dosage_ingredients = []
+        for ing in parsed_ingredients:
+            # Використати base_substance та elemental_quantity (які mapper розрахував з коефіцієнтами)
+            base_substance = ing.get("base_substance") or ing.get("name")
+            elemental_qty = ing.get("elemental_quantity")
+            
+            # Якщо elemental_quantity не розраховано (наприклад, для excipients), використати оригінальну кількість
+            if elemental_qty is None:
+                elemental_qty = ing.get("quantity")
+            
+            dosage_ing = {
+                "name": base_substance,  # "Магній" замість "цитрат магнію"
+                "quantity": elemental_qty,  # 100 замість 500 (якщо коефіцієнт 0.2)
+                "unit": ing.get("unit", "мг"),
+                "form": ing.get("form"),  # Зберегти форму для додаткової перевірки
+                "type": ing.get("type")
+            }
+            dosage_ingredients.append(dosage_ing)
+            
+            logger.debug(
+                f"Dosage ingredient: '{ing.get('name')}' ({ing.get('quantity')} {ing.get('unit')}) "
+                f"→ '{base_substance}' ({elemental_qty} {ing.get('unit')})"
+            )
+        
         # Run dosage validation (uses existing DosageService)
+        # Передаємо base_substance та elemental_quantity для правильної перевірки EFSA limits
         dosage_result: DosageCheckResult = await dosage_service.check_dosages(
-            ingredients
+            dosage_ingredients
         )
         
         # НОВИЙ КОД: Перевірка заборонених фраз
@@ -200,14 +267,15 @@ async def full_check(
             "product_info": {
                 "name": label_data.get("product_name"),
                 "form": label_data.get("form"),
-                "quantity": label_data.get("quantity")
+                "quantity": label_data.get("quantity"),
+                "ingredients": parsed_ingredients  # Використовуємо обогачені інгредієнти
             },
             "errors": [error.dict() for error in dosage_result.errors],
             "warnings": [warning.dict() for warning in dosage_result.warnings],
             "compliance_errors": [error.dict() for error in all_compliance_errors],
             "stats": {
-                "total_ingredients": dosage_result.total_ingredients_checked,
-                "substances_not_found": dosage_result.substances_not_found,
+                "total_ingredients": len(parsed_ingredients),
+                "substances_not_found": substances_not_found,  # Використовуємо правильну статистику
                 "total_dosage_errors": len(dosage_result.errors),
                 "total_dosage_warnings": len(dosage_result.warnings),
                 "total_forbidden_phrases": compliance_result.total_forbidden_phrases,
