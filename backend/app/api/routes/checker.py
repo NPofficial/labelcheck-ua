@@ -268,8 +268,24 @@ async def full_check(
                 "name": label_data.get("product_name"),
                 "form": label_data.get("form"),
                 "quantity": label_data.get("quantity"),
+                "batch_number": label_data.get("batch_number"),
                 "ingredients": parsed_ingredients  # Використовуємо обогачені інгредієнти
             },
+            # Оператор ринку та виробник
+            "operator": label_data.get("operator"),
+            "manufacturer": label_data.get("manufacturer"),
+            # Обов'язкові поля з етикетки
+            "mandatory_phrases": label_data.get("mandatory_phrases"),
+            "full_text": label_data.get("full_text"),
+            # Інша інформація з етикетки
+            "label_warnings": label_data.get("warnings"),  # Застереження з етикетки
+            "daily_dose": label_data.get("daily_dose"),
+            "storage": label_data.get("storage"),
+            "shelf_life": label_data.get("shelf_life"),
+            "tech_specs": label_data.get("tech_specs"),
+            "allergens": label_data.get("allergens"),
+            "allergen_statement": label_data.get("allergen_statement"),
+            # Результати перевірки
             "errors": [error.dict() for error in dosage_result.errors],
             "warnings": [warning.dict() for warning in dosage_result.warnings],
             "compliance_errors": [error.dict() for error in all_compliance_errors],
