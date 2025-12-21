@@ -351,11 +351,11 @@ class DosageService:
             # Перевірити форму тільки якщо вона не знайдена в substance_form_conversions
             # Використати form з ingredient або parsed_form
             form_to_check = form or parsed_form
-        form_warning = self._check_form(
+            form_warning = self._check_form(
                 form_to_check,
-            vitamin_mineral.get("allowed_forms", []),
-            base_substance,
-        )
+                vitamin_mineral.get("allowed_forms", []),
+                base_substance,
+            )
 
         display_dose = f"{elemental_quantity} {unit}"
 
