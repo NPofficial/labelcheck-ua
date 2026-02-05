@@ -7,13 +7,17 @@ const config = {
     './components/**/*.{ts,tsx}',
     './app/**/*.{ts,tsx}',
     './src/**/*.{ts,tsx}',
-	],
+  ],
   prefix: "",
   theme: {
     container: {
       center: true,
-      padding: "2rem",
+      padding: "1rem",
       screens: {
+        sm: "640px",
+        md: "768px",
+        lg: "1024px",
+        xl: "1280px",
         "2xl": "1400px",
       },
     },
@@ -40,6 +44,7 @@ const config = {
         },
         success: {
           DEFAULT: "#10B981",
+          light: "#D1FAE5",
           50: "#D1FAE5",
           100: "#A7F3D0",
           200: "#6EE7B7",
@@ -54,6 +59,7 @@ const config = {
         },
         error: {
           DEFAULT: "#EF4444",
+          light: "#FEE2E2",
           50: "#FEE2E2",
           100: "#FECACA",
           200: "#FCA5A5",
@@ -68,6 +74,7 @@ const config = {
         },
         warning: {
           DEFAULT: "#F59E0B",
+          light: "#FFFBEB",
           50: "#FFFBEB",
           100: "#FEF3C7",
           200: "#FDE68A",
@@ -109,6 +116,17 @@ const config = {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+        xl: "1rem",
+        "2xl": "1.5rem",
+        "3xl": "2rem",
+      },
+      backgroundImage: {
+        'gradient-primary': 'linear-gradient(135deg, #3B82F6 0%, #0EA5E9 100%)',
+        'gradient-hero': 'linear-gradient(180deg, #EFF6FF 0%, #FFFFFF 100%)',
+        'gradient-dark': 'linear-gradient(135deg, #1E293B 0%, #0F172A 100%)',
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
       },
       keyframes: {
         "accordion-down": {
@@ -119,10 +137,30 @@ const config = {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
+        "fade-in": {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
+        "slide-up": {
+          from: { opacity: "0", transform: "translateY(20px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
+        "slide-down": {
+          from: { opacity: "0", transform: "translateY(-10px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
+        "pulse-slow": {
+          "0%, 100%": { opacity: "1" },
+          "50%": { opacity: "0.5" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        "fade-in": "fade-in 0.5s ease-out",
+        "slide-up": "slide-up 0.5s ease-out",
+        "slide-down": "slide-down 0.3s ease-out",
+        "pulse-slow": "pulse-slow 3s ease-in-out infinite",
       },
     },
   },
@@ -130,4 +168,3 @@ const config = {
 } satisfies Config
 
 export default config
-
