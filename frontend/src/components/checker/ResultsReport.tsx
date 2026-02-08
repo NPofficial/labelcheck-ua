@@ -36,9 +36,16 @@ export function ResultsReport({
 }: ResultsReportProps) {
   const [showCorrectItems, setShowCorrectItems] = useState(false);
 
-  const hasErrors = result.errors.length > 0;
-  const hasWarnings = result.warnings.length > 0;
-  const correctCount = result.mandatory_fields.present.length;
+  // Safe access to nested properties
+  const errors = result.errors ?? [];
+  const warnings = result.warnings ?? [];
+  const presentFields = result.mandatory_fields?.present ?? [];
+  const foundPhrases = result.forbidden_phrases?.found ?? [];
+  const totalPenalty = result.penalties?.total ?? 0;
+
+  const hasErrors = errors.length > 0;
+  const hasWarnings = warnings.length > 0;
+  const correctCount = presentFields.length;
 
   return (
     <div className="w-full max-w-3xl mx-auto">
@@ -80,13 +87,13 @@ export function ResultsReport({
         {/* Summary Stats */}
         <div className="grid grid-cols-3 border-b">
           <div className="p-4 text-center border-r">
-            <p className="text-2xl font-bold text-error">{result.errors.length}</p>
+            <p className="text-2xl font-bold text-error">{errors.length}</p>
             <p className="text-xs text-muted-foreground">
               {content.checker.results.errors}
             </p>
           </div>
           <div className="p-4 text-center border-r">
-            <p className="text-2xl font-bold text-warning">{result.warnings.length}</p>
+            <p className="text-2xl font-bold text-warning">{warnings.length}</p>
             <p className="text-xs text-muted-foreground">
               {content.checker.results.warnings}
             </p>
@@ -104,9 +111,9 @@ export function ResultsReport({
           {/* Penalty Summary */}
           {(hasErrors || hasWarnings) && (
             <PenaltySummary
-              totalPenalty={result.penalties.total}
-              errorCount={result.errors.length}
-              warningCount={result.warnings.length}
+              totalPenalty={totalPenalty}
+              errorCount={errors.length}
+              warningCount={warnings.length}
             />
           )}
 
@@ -115,10 +122,10 @@ export function ResultsReport({
             <div>
               <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
                 <XCircle className="h-5 w-5 text-error" />
-                {content.checker.results.errors} ({result.errors.length})
+                {content.checker.results.errors} ({errors.length})
               </h3>
               <div className="space-y-3">
-                {result.errors.map((error, index) => (
+                {errors.map((error, index) => (
                   <ErrorCard key={index} error={error} />
                 ))}
               </div>
@@ -130,10 +137,10 @@ export function ResultsReport({
             <div>
               <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
                 <XCircle className="h-5 w-5 text-warning" />
-                {content.checker.results.warnings} ({result.warnings.length})
+                {content.checker.results.warnings} ({warnings.length})
               </h3>
               <div className="space-y-3">
-                {result.warnings.map((warning, index) => (
+                {warnings.map((warning, index) => (
                   <WarningCard key={index} warning={warning} />
                 ))}
               </div>
@@ -159,7 +166,7 @@ export function ResultsReport({
               </button>
               {showCorrectItems && (
                 <div className="mt-3 space-y-2">
-                  {result.mandatory_fields.present.map((field, index) => (
+                  {presentFields.map((field, index) => (
                     <div
                       key={index}
                       className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg"
@@ -174,13 +181,13 @@ export function ResultsReport({
           )}
 
           {/* Forbidden Phrases */}
-          {result.forbidden_phrases.found.length > 0 && (
+          {foundPhrases.length > 0 && (
             <div className="p-4 bg-error-light rounded-xl">
               <h4 className="font-medium text-foreground mb-2">
                 Виявлені заборонені фрази:
               </h4>
               <ul className="space-y-1">
-                {result.forbidden_phrases.found.map((phrase, index) => (
+                {foundPhrases.map((phrase, index) => (
                   <li key={index} className="text-sm text-error flex items-start gap-2">
                     <span>•</span>
                     <span>{phrase}</span>
