@@ -147,7 +147,11 @@ class DosageService:
             elif await self._is_novel_food(ingredient_name):
                 result = await self._check_novel_food(ingredient_name, quantity, unit, form)
             
-            # Type 7: Unknown substance
+            # Type 7: Other substances (MSM, coenzymes, etc.) - FIX-1
+            elif await self._is_other_substance(ingredient_name):
+                result = await self._check_other_substance(ingredient_name, quantity, unit, form)
+            
+            # Type 8: Unknown substance
             else:
                 substances_not_found += 1
                 warnings.append(DosageWarning(
@@ -216,8 +220,9 @@ class DosageService:
     async def _is_vitamin_mineral(self, ingredient_name: str) -> bool:
         """Check if substance is in allowed_vitamins_minerals"""
         try:
+            # FIX-2: Use ILIKE for case-insensitive fuzzy matching
             result = self.supabase.table("allowed_vitamins_minerals").select("id").or_(
-                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+                f"substance_name_ua.ilike.%{ingredient_name}%,substance_name_en.ilike.%{ingredient_name}%"
             ).execute()
             return len(result.data) > 0
         except Exception as e:
@@ -227,8 +232,9 @@ class DosageService:
     async def _is_amino_acid(self, ingredient_name: str) -> bool:
         """Check if substance is in amino_acids"""
         try:
+            # FIX-2: Use ILIKE for case-insensitive fuzzy matching
             result = self.supabase.table("amino_acids").select("id").or_(
-                f"amino_acid_name_ua.eq.{ingredient_name},amino_acid_name_en.eq.{ingredient_name}"
+                f"amino_acid_name_ua.ilike.%{ingredient_name}%,amino_acid_name_en.ilike.%{ingredient_name}%"
             ).execute()
             return len(result.data) > 0
         except Exception as e:
@@ -265,8 +271,9 @@ class DosageService:
     async def _is_physiological(self, ingredient_name: str) -> bool:
         """Check if substance is in max_doses_table1 with category='physiological'"""
         try:
+            # FIX-2: Use ILIKE for case-insensitive fuzzy matching
             result = self.supabase.table("max_doses_table1").select("id").or_(
-                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+                f"substance_name_ua.ilike.%{ingredient_name}%,substance_name_en.ilike.%{ingredient_name}%"
             ).eq("category", "physiological").execute()
             return len(result.data) > 0
         except Exception as e:
@@ -276,12 +283,29 @@ class DosageService:
     async def _is_novel_food(self, ingredient_name: str) -> bool:
         """Check if substance is in novel_foods"""
         try:
+            # FIX-2: Use ILIKE for case-insensitive fuzzy matching
             result = self.supabase.table("novel_foods").select("id").or_(
-                f"substance_name_ua.eq.{ingredient_name},substance_name_en.eq.{ingredient_name}"
+                f"substance_name_ua.ilike.%{ingredient_name}%,substance_name_en.ilike.%{ingredient_name}%"
             ).execute()
             return len(result.data) > 0
         except Exception as e:
             logger.debug(f"Error checking novel food {ingredient_name}: {e}")
+            return False
+    
+    async def _is_other_substance(self, ingredient_name: str) -> bool:
+        """
+        FIX-1: Check if substance is in other_substances table
+        
+        This table contains substances like MSM (methylsulfonylmethane),
+        coenzymes, and other physiological substances not covered by other tables.
+        """
+        try:
+            result = self.supabase.table("other_substances").select("id").or_(
+                f"substance_name_ua.ilike.%{ingredient_name}%,substance_name_en.ilike.%{ingredient_name}%"
+            ).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            logger.debug(f"Error checking other substance {ingredient_name}: {e}")
             return False
     
     # ==================== CHECKING METHODS FOR EACH TYPE ====================
@@ -468,14 +492,15 @@ class DosageService:
         # Показуємо інформаційне повідомлення, але не як помилку
         if vitamin_mineral:
             # Речовина дозволена, але обмежень немає - це OK
+            # FIX-5: Додано назву речовини в повідомлення
             info_message = DosageWarning(
                 ingredient=base_substance,
-                message="Обмежень по дозуванню немає, але будьте обережні",
+                message=f"{base_substance}: обмежень по дозуванню не знайдено",
                 level=None,  # Не рівень помилки
                 source="no_limit_available",
                 current_dose=display_dose,
                 recommendation=(
-                    "Речовина дозволена для використання в дієтичних добавках, "
+                    f"'{base_substance}' дозволено для використання в дієтичних добавках, "
                     "але максимальна доза не встановлена в EFSA та Таблиці 1. "
                     "Рекомендується дотримуватися загальних принципів безпеки та "
                     "консультуватися з лікарем при необхідності."
@@ -881,6 +906,108 @@ class DosageService:
                     level=4,
                     source="novel_foods",
                     recommendation="Таблиця novel_foods буде заповнена пізніше"
+                )
+            }
+    
+    async def _check_other_substance(
+        self, 
+        ingredient_name: str, 
+        quantity: float, 
+        unit: str,
+        form: str
+    ) -> Optional[Dict]:
+        """
+        FIX-1: Check Other Substances (MSM, coenzymes, etc.)
+        
+        Source: other_substances table
+        These are physiological substances not covered by other tables.
+        """
+        # Check if quantity is provided
+        if quantity is None:
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message="Кількість речовини не вказана",
+                    recommendation="Вкажіть кількість речовини для перевірки дози"
+                )
+            }
+        
+        try:
+            result = self.supabase.table("other_substances").select("*").or_(
+                f"substance_name_ua.ilike.%{ingredient_name}%,substance_name_en.ilike.%{ingredient_name}%"
+            ).execute()
+            
+            if not result.data or len(result.data) == 0:
+                return {
+                    "type": "warning",
+                    "warning": DosageWarning(
+                        ingredient=ingredient_name,
+                        message="Речовина не знайдена в таблиці other_substances",
+                        level=4,
+                        source="other_substances",
+                        recommendation="Перевірте правильність назви речовини"
+                    )
+                }
+            
+            # Take first match
+            other_substance = result.data[0]
+            
+            # Log if multiple matches
+            if len(result.data) > 1:
+                logger.warning(f"Multiple matches for other substance '{ingredient_name}': {len(result.data)}")
+            
+            max_dose = other_substance.get("max_daily_dose")
+            dose_unit = other_substance.get("unit", "мг")
+            
+            # If no max_dose set, it's allowed without limits
+            if max_dose is None:
+                return {
+                    "type": "ok",
+                    "info": DosageWarning(
+                        ingredient=ingredient_name,
+                        message=f"{ingredient_name}: дозволено без обмежень дози",
+                        level=None,
+                        source="other_substances",
+                        current_dose=f"{quantity} {unit}" if quantity else None,
+                        recommendation=(
+                            "Речовина дозволена для використання в дієтичних добавках. "
+                            "Максимальна доза не встановлена регуляторами."
+                        )
+                    )
+                }
+            
+            # Check dose
+            converted_quantity = self._convert_to_base_unit(quantity, unit, dose_unit)
+            
+            if converted_quantity > max_dose:
+                return {
+                    "type": "error",
+                    "error": DosageError(
+                        ingredient=ingredient_name,
+                        message="Перевищує максимальну дозу",
+                        level=4,
+                        source="other_substances",
+                        current_dose=f"{quantity} {unit}",
+                        max_allowed=f"{max_dose} {dose_unit}",
+                        regulatory_source="Проєкт Змін до Наказу №1114, Додаток 3",
+                        recommendation=(
+                            f"Зменшіть дозування до {max_dose} {dose_unit} або нижче."
+                        ),
+                        penalty_amount=640000
+                    )
+                }
+            else:
+                return {"type": "ok"}
+                
+        except Exception as e:
+            logger.error(f"Error checking other substance {ingredient_name}: {e}")
+            return {
+                "type": "warning",
+                "warning": DosageWarning(
+                    ingredient=ingredient_name,
+                    message=f"Помилка при перевірці речовини: {str(e)}",
+                    recommendation="Перевірте правильність даних"
                 )
             }
     

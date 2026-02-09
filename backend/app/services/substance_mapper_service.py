@@ -333,6 +333,10 @@ class SubstanceMapperService:
             Row from DB or None
         """
         try:
+            # FIX-7: Генеруємо варіанти з перестановкою слів
+            # "цинк цитрат" → ["цинк цитрат", "цитрат цинк"]
+            name_variants = self._generate_word_permutations(name_normalized)
+            
             # СПОСІБ 1: Прямий пошук по substance_name_ua (найшвидше)
             try:
                 # Завантажити всі записи та перевірити нормалізовані назви
@@ -344,12 +348,13 @@ class SubstanceMapperService:
                         substance_ua = row.get("substance_name_ua", "")
                         substance_ua_normalized = self._normalize_name(substance_ua)
                         
-                        # Точне співпадіння нормалізованих назв
-                        if substance_ua_normalized == name_normalized:
-                            logger.info(
-                                f"✅ Form found by substance_name_ua: '{name_normalized}' → '{substance_ua}' ({row.get('form_name_ua')})"
-                            )
-                            return row
+                        # Перевірити всі варіанти (включаючи перестановки)
+                        for variant in name_variants:
+                            if substance_ua_normalized == variant:
+                                logger.info(
+                                    f"✅ Form found by substance_name_ua: '{name_normalized}' → '{substance_ua}' ({row.get('form_name_ua')})"
+                                )
+                                return row
             except Exception as e:
                 logger.debug(f"Search by substance_name_ua failed: {e}")
             
@@ -362,12 +367,13 @@ class SubstanceMapperService:
                         substance_en = row.get("substance_name_en", "")
                         substance_en_normalized = self._normalize_name(substance_en)
                         
-                        # Точне співпадіння нормалізованих назв
-                        if substance_en_normalized == name_normalized:
-                            logger.info(
-                                f"✅ Form found by substance_name_en: '{name_normalized}' → '{substance_en}' ({row.get('form_name_ua')})"
-                            )
-                            return row
+                        # Перевірити всі варіанти (включаючи перестановки)
+                        for variant in name_variants:
+                            if substance_en_normalized == variant:
+                                logger.info(
+                                    f"✅ Form found by substance_name_en: '{name_normalized}' → '{substance_en}' ({row.get('form_name_ua')})"
+                                )
+                                return row
             except Exception as e:
                 logger.debug(f"Search by substance_name_en failed: {e}")
             
@@ -393,11 +399,13 @@ class SubstanceMapperService:
                 
                 for variation in variations or []:
                     variation_normalized = self._normalize_name(variation)
-                    if variation_normalized == name_normalized:
-                        logger.info(
-                            f"✅ Form found by name_variations: '{name_normalized}' → '{row.get('substance_name_ua')}' ({row.get('form_name_ua')})"
-                        )
-                        return row
+                    # Перевірити всі варіанти (включаючи перестановки)
+                    for variant in name_variants:
+                        if variation_normalized == variant:
+                            logger.info(
+                                f"✅ Form found by name_variations: '{name_normalized}' → '{row.get('substance_name_ua')}' ({row.get('form_name_ua')})"
+                            )
+                            return row
             
             logger.debug(f"⚠️ Form not found for normalized name: '{name_normalized}'")
             return None
@@ -413,15 +421,57 @@ class SubstanceMapperService:
             name: Original name
 
         Returns:
-            Normalized name (lowercase, trimmed, кирилиця В→B)
+            Normalized name (lowercase, trimmed, vitamin letters Cyrillic→Latin)
         """
         normalized = (name or "").lower().strip()
         
-        # Критична заміна кирилиці на латиницю
+        # FIX-3: Заміна ТІЛЬКИ літер B-вітамінів (кирилиця В → латиниця B)
+        # Це найчастіша проблема: "вітамін В6" → "вітамін b6"
+        # Інші літери (А, С, Е, К) НЕ замінюємо глобально, бо зламає слова
         normalized = normalized.replace('в', 'b')
-        normalized = normalized.replace('В', 'B')
+        
+        # Спеціальні патерни для вітамінів А, С, Е, К - заміна ТІЛЬКИ в кінці слова або перед цифрою
+        # Наприклад: "вітамін а" → "вітамін a", але "магній" залишається "магній"
+        # (re вже імпортовано на початку файлу)
+        
+        # Вітамін А: замінити "а" якщо воно в кінці і перед ним пробіл (тобто окрема літера)
+        normalized = re.sub(r'(?<=\s)а(?=\s|$)', 'a', normalized)  # " а " → " a "
+        normalized = re.sub(r'(?<=\s)а(?=\d)', 'a', normalized)   # " а1" → " a1" (якби таке було)
+        
+        # Вітамін С
+        normalized = re.sub(r'(?<=\s)с(?=\s|$)', 'c', normalized)
+        
+        # Вітамін Е
+        normalized = re.sub(r'(?<=\s)е(?=\s|$)', 'e', normalized)
+        
+        # Вітамін К
+        normalized = re.sub(r'(?<=\s)к(?=\s|$)', 'k', normalized)
+        normalized = re.sub(r'(?<=\s)к(?=\d)', 'k', normalized)  # К1, К2
         
         return normalized
+    
+    def _generate_word_permutations(self, name: str) -> list:
+        """
+        FIX-7: Генерація варіантів з перестановкою слів
+        
+        Приклад:
+            "цинк цитрат" → ["цинк цитрат", "цитрат цинк"]
+            "міді глюконат" → ["міді глюконат", "глюконат міді"]
+        
+        Args:
+            name: Нормалізована назва
+            
+        Returns:
+            Список варіантів (включаючи оригінал)
+        """
+        words = name.split()
+        
+        if len(words) != 2:
+            # Тільки для 2-слівних назв (напр. "цинк цитрат")
+            return [name]
+        
+        # Оригінальний порядок + обернений
+        return [name, f"{words[1]} {words[0]}"]
     
     async def _is_excipient(self, ingredient_name: str) -> bool:
         """
@@ -527,4 +577,94 @@ class SubstanceMapperService:
         except Exception as e:
             logger.debug(f"Error finding plant {ingredient_name}: {e}")
             return None
+    
+    def split_composition(self, ingredient_name: str, quantity: Optional[float], unit: str) -> list:
+        """
+        FIX-6: Розбити композицію екстрактів на окремі рослини
+        
+        Приклад:
+            "композиція екстрактів: кропиви, шавлії, календули, хвоща - 185 мг"
+            →
+            [
+                {"name": "кропива", "quantity": 46.25, "unit": "мг", "type": "plant"},
+                {"name": "шавлія", "quantity": 46.25, "unit": "мг", "type": "plant"},
+                {"name": "календула", "quantity": 46.25, "unit": "мг", "type": "plant"},
+                {"name": "хвощ", "quantity": 46.25, "unit": "мг", "type": "plant"},
+            ]
+        
+        Args:
+            ingredient_name: Назва інгредієнта (може бути композиція)
+            quantity: Загальна кількість
+            unit: Одиниця виміру
+            
+        Returns:
+            Список окремих інгредієнтів або [оригінальний] якщо не композиція
+        """
+        ingredient_lower = ingredient_name.lower()
+        
+        # Перевірити чи це композиція
+        composition_markers = [
+            "композиція", "комплекс", "суміш", "збір", "composition", "complex", "mix"
+        ]
+        
+        is_composition = any(marker in ingredient_lower for marker in composition_markers)
+        
+        if not is_composition:
+            # Не композиція - повернути як є
+            return [{"name": ingredient_name, "quantity": quantity, "unit": unit}]
+        
+        logger.info(f"🌿 Detected composition: {ingredient_name}")
+        
+        # Витягти список рослин з назви
+        # Шукаємо після двокрапки або "екстрактів"
+        plants_text = ingredient_name
+        
+        # Видалити маркери композиції
+        for marker in composition_markers:
+            plants_text = plants_text.lower().replace(marker, "")
+        
+        # Видалити "екстрактів", "екстракт" тощо
+        plants_text = re.sub(r'екстракт[іи]?в?', '', plants_text, flags=re.IGNORECASE)
+        plants_text = re.sub(r'extract[s]?', '', plants_text, flags=re.IGNORECASE)
+        
+        # Видалити двокрапку та все до неї (якщо є)
+        if ':' in plants_text:
+            plants_text = plants_text.split(':')[-1]
+        
+        # Видалити дози та одиниці (напр. "- 185 мг")
+        plants_text = re.sub(r'[-–]\s*\d+[\.,]?\d*\s*(мг|мкг|г|mg|mcg|g)?', '', plants_text)
+        plants_text = re.sub(r'\d+[\.,]?\d*\s*(мг|мкг|г|mg|mcg|g)', '', plants_text)
+        
+        # Розділити по комі
+        plant_names = [p.strip() for p in plants_text.split(',') if p.strip()]
+        
+        if not plant_names:
+            # Не вдалося розділити - повернути як є
+            return [{"name": ingredient_name, "quantity": quantity, "unit": unit, "type": "plant"}]
+        
+        # Розділити кількість порівну між рослинами
+        per_plant_quantity = None
+        if quantity is not None and len(plant_names) > 0:
+            per_plant_quantity = round(quantity / len(plant_names), 2)
+        
+        result = []
+        for plant_name in plant_names:
+            # Очистити назву рослини
+            clean_name = plant_name.strip()
+            # Видалити родовий відмінок ("кропиви" → "кропива")
+            # Це спрощений варіант, може потребувати покращення
+            if clean_name.endswith('и') and len(clean_name) > 3:
+                clean_name = clean_name[:-1] + 'а'  # кропиви → кропива
+            elif clean_name.endswith('і') and len(clean_name) > 3:
+                clean_name = clean_name[:-1] + 'я'  # шавлії → шавлія
+            
+            result.append({
+                "name": clean_name,
+                "quantity": per_plant_quantity,
+                "unit": unit,
+                "type": "plant"
+            })
+        
+        logger.info(f"🌿 Split into {len(result)} plants: {[p['name'] for p in result]}")
+        return result
 
