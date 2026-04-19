@@ -193,3 +193,100 @@ export async function checkLabel(
   const full = await fullCheck(quick.check_id, options.signal);
   return full;
 }
+
+// ==========================================
+// BACKWARD COMPATIBILITY (legacy exports)
+// ==========================================
+//
+// Ці експорти існують лише щоб старий код (checker/page.tsx, UploadZone.tsx,
+// ResultsReport.tsx) компілювався без змін. Для нового коду бери типи напряму
+// з './types', а PDF відкривай через getReportUrl().
+//
+
+export type {
+  QuickCheckResponse,
+  FullCheckResponse,
+  DosageError,
+  DosageWarning,
+  ComplianceError,
+  ParsedIngredient,
+} from './types';
+
+/**
+ * @deprecated Використовуй точні типи з `./types`
+ * ({@link DosageError}, {@link DosageWarning}, {@link ComplianceError}).
+ * Цей тип — спільний legacy-інтерфейс старого UI.
+ */
+export type ValidationError = {
+  field?: string;
+  message: string;
+  source?: string;
+  penalty?: number;
+  recommendation?: string;
+  level?: 'error' | 'warning';
+};
+
+/**
+ * @deprecated Використовуй {@link ParsedIngredient} (Full) або
+ * `QuickIngredient` (Quick) з `./types`.
+ */
+export type Ingredient = {
+  name: string;
+  quantity: number | null;
+  unit: string;
+  form?: string | null;
+};
+
+/**
+ * @deprecated Використовуй `FullCheckResponse['product_info']` або
+ * `QuickCheckResponse['product_info']` з `./types`.
+ */
+export type ProductInfo = {
+  name: string | null;
+  form?: string | null;
+  quantity?: number | null;
+  ingredients: Array<{
+    name: string;
+    quantity: number | null;
+    unit: string;
+    form?: string | null;
+  }>;
+};
+
+/**
+ * @deprecated Замість завантаження через fetch+Blob — формуй URL через
+ * {@link getReportUrl} та відкривай через `window.open(url)` або
+ * `<a href={url} download>`. Браузер сам обробить PDF.
+ *
+ * Ця обгортка залишена лише для legacy-коду, який явно працює з Blob.
+ */
+export async function downloadReport(
+  checkId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const endpoint = `/check-label/${checkId}/report.pdf`;
+  const url = `${base}${endpoint}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, { method: 'GET', signal });
+  } catch (err) {
+    if (signal?.aborted) {
+      throw new AbortedError();
+    }
+    throw new NetworkError({ endpoint, cause: err });
+  }
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const body = (await response.json()) as APIErrorResponse;
+      if (body.detail) detail = body.detail;
+    } catch {
+      // Body не JSON або порожнє — лишаємо fallback.
+    }
+    throw new APIError({ status: response.status, endpoint, message: detail });
+  }
+
+  return response.blob();
+}
