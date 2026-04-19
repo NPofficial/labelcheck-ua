@@ -164,6 +164,34 @@ async def full_check(
         
         logger.info(f"Full check started: {check_id} ({len(ingredients)} ingredients)")
         
+        # FIX-6: Розбити композиції екстрактів на окремі рослини ПЕРЕД обробкою
+        expanded_ingredients = []
+        for ingredient in ingredients:
+            ingredient_name = ingredient.get("name", "")
+            ingredient_qty = ingredient.get("quantity")
+            ingredient_unit = ingredient.get("unit", "мг")
+            
+            # Спробувати розбити якщо це композиція
+            split_result = mapper_service.split_composition(ingredient_name, ingredient_qty, ingredient_unit)
+            
+            if len(split_result) > 1:
+                # Композиція була розбита - додати всі частини
+                for part in split_result:
+                    expanded_ingredients.append({
+                        **ingredient,  # Копіювати оригінальні поля
+                        "name": part["name"],
+                        "quantity": part["quantity"],
+                        "unit": part["unit"],
+                        "type": part.get("type", ingredient.get("type")),
+                        "_from_composition": ingredient_name  # Зберегти оригінал для відстеження
+                    })
+            else:
+                # Не композиція - залишити як є
+                expanded_ingredients.append(ingredient)
+        
+        logger.info(f"After composition expansion: {len(expanded_ingredients)} ingredients (was {len(ingredients)})")
+        ingredients = expanded_ingredients  # Замінити оригінальний список
+        
         # Парсити інгредієнти через mapper для статистики та обогачення даних
         parsed_ingredients = []
         for ingredient in ingredients:

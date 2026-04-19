@@ -7,7 +7,7 @@ python-multipart==0.0.9
 anthropic==0.21.3
 
 # Database
-supabase==2.4.0
+supabase==2.10.0
 psycopg2-binary==2.9.9
 
 # Document Processing
