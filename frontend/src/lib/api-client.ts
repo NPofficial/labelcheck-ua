@@ -13,9 +13,53 @@
 
 import type {
   QuickCheckResponse,
-  FullCheckResponse,
+  FullCheckResponse as _CanonicalFullCheckResponse,
+  DosageError as _CanonicalDosageError,
+  DosageWarning as _CanonicalDosageWarning,
   APIErrorResponse,
 } from './types';
+
+/**
+ * @deprecated Ширший legacy-тип, який старий UI (ResultsReport, ErrorCard,
+ * WarningCard) споживає через `@/lib/api-client`.
+ *
+ * Для нового коду бери канонічний `FullCheckResponse` з `./types`.
+ *
+ * Розширення:
+ *   - errors/warnings отримують плоскі поля `field` та `penalty` (маппінг зі
+ *     старого UI; backend їх не повертає, але фронт-код на них посилається).
+ *   - додаються `mandatory_fields` / `forbidden_phrases` (групування, якого
+ *     немає в канонічній формі — вони лежать у `compliance_errors`).
+ *   - `penalties.total` як аліас для `penalties.total_amount`.
+ */
+type FullCheckResponse = Omit<
+  _CanonicalFullCheckResponse,
+  'errors' | 'warnings' | 'penalties'
+> & {
+  errors: Array<_CanonicalDosageError & { field: string; penalty: number }>;
+  warnings: Array<
+    _CanonicalDosageWarning & {
+      field: string;
+      penalty: number;
+      /** Narrowed for legacy UI — DosageWarning.source canonical is string|null. */
+      source: string;
+    }
+  >;
+  penalties: _CanonicalFullCheckResponse['penalties'] & {
+    /** @deprecated Використовуй `total_amount`. */
+    total?: number;
+  };
+  /** @deprecated Legacy-групування. Використовуй `compliance_errors`. */
+  mandatory_fields?: {
+    present?: string[];
+    missing?: string[];
+  };
+  /** @deprecated Legacy-групування. Використовуй `compliance_errors`. */
+  forbidden_phrases?: {
+    found?: string[];
+    allowed?: string[];
+  };
+};
 
 // ==========================================
 // CONFIG
@@ -157,12 +201,13 @@ export async function fullCheck(
   checkId: string,
   signal?: AbortSignal,
 ): Promise<FullCheckResponse> {
-  return apiFetch<FullCheckResponse>('/check-label/full', {
+  const raw = await apiFetch<_CanonicalFullCheckResponse>('/check-label/full', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ check_id: checkId }),
     signal,
   });
+  return raw as unknown as FullCheckResponse;
 }
 
 /**
@@ -183,11 +228,43 @@ export function getReportUrl(checkId: string): string {
  */
 export async function checkLabel(
   file: File,
-  options: {
+  options?: {
     signal?: AbortSignal;
     onQuickDone?: (quick: QuickCheckResponse) => void;
-  } = {},
+  },
+): Promise<FullCheckResponse>;
+/**
+ * @deprecated Legacy callback-сигнатура старого UI.
+ * Використовуй об'єктний варіант з `onQuickDone`.
+ *
+ * Колбек викликається з (step, progress):
+ *   step=1, progress=100 — коли Quick готовий
+ *   step=2, progress=0   — старт Full
+ *   step=2, progress=100 — Full готовий
+ */
+export async function checkLabel(
+  file: File,
+  onProgress: (step: 1 | 2, progress: number) => void,
+): Promise<FullCheckResponse>;
+export async function checkLabel(
+  file: File,
+  arg?:
+    | ((step: 1 | 2, progress: number) => void)
+    | {
+        signal?: AbortSignal;
+        onQuickDone?: (quick: QuickCheckResponse) => void;
+      },
 ): Promise<FullCheckResponse> {
+  if (typeof arg === 'function') {
+    const onProgress = arg;
+    const quick = await quickCheck(file);
+    onProgress(1, 100);
+    onProgress(2, 0);
+    const full = await fullCheck(quick.check_id);
+    onProgress(2, 100);
+    return full;
+  }
+  const options = arg ?? {};
   const quick = await quickCheck(file, options.signal);
   options.onQuickDone?.(quick);
   const full = await fullCheck(quick.check_id, options.signal);
@@ -205,12 +282,13 @@ export async function checkLabel(
 
 export type {
   QuickCheckResponse,
-  FullCheckResponse,
   DosageError,
   DosageWarning,
   ComplianceError,
   ParsedIngredient,
 } from './types';
+
+export type { FullCheckResponse };
 
 /**
  * @deprecated Використовуй точні типи з `./types`
