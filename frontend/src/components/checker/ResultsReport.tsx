@@ -18,6 +18,9 @@ import { WarningCard } from './WarningCard';
 import { ComplianceErrorCard } from './ComplianceErrorCard';
 import { PenaltySummary } from './PenaltySummary';
 import { StatusHero } from './StatusHero';
+import { IngredientsTable } from './IngredientsTable';
+import { LabelMetadataSection } from './LabelMetadataSection';
+import { OcrTextSection } from './OcrTextSection';
 
 interface ResultsReportProps {
   result: FullCheckResponse;
@@ -142,6 +145,15 @@ export function ResultsReport({
               </div>
             </section>
           )}
+
+          {/* Розпізнані інгредієнти */}
+          <IngredientsTable ingredients={result.product_info?.ingredients ?? []} />
+
+          {/* Метадані з етикетки (аккордеон) */}
+          <LabelMetadataSection result={result} />
+
+          {/* Повний OCR-текст (аккордеон) */}
+          <OcrTextSection fullText={result.full_text} />
         </div>
 
         {/* Action Buttons — Sticky on Mobile */}

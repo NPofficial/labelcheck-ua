@@ -7,3 +7,7 @@ export { WarningCard } from './WarningCard';
 export { ComplianceErrorCard } from './ComplianceErrorCard';
 export { PenaltySummary } from './PenaltySummary';
 export { StatusHero } from './StatusHero';
+export { IngredientsTable } from './IngredientsTable';
+export { LabelMetadataSection } from './LabelMetadataSection';
+export { OcrTextSection } from './OcrTextSection';
+export { CollapsibleSection } from './CollapsibleSection';
