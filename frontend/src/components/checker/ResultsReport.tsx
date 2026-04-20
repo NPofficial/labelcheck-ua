@@ -1,23 +1,23 @@
 'use client';
 
-import { useState } from 'react';
-import { 
-  CheckCircle, 
-  XCircle, 
-  Download, 
-  Mail, 
-  Share2, 
+import {
+  XCircle,
+  AlertTriangle,
+  Ban,
+  FileWarning,
+  Download,
+  Mail,
+  Share2,
   RefreshCw,
-  ChevronDown,
-  ChevronUp
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 import { content } from '@/content/ua';
-import type { FullCheckResponse } from '@/lib/api-client';
+import type { FullCheckResponse } from '@/lib/types';
 import { ErrorCard } from './ErrorCard';
 import { WarningCard } from './WarningCard';
+import { ComplianceErrorCard } from './ComplianceErrorCard';
 import { PenaltySummary } from './PenaltySummary';
+import { StatusHero } from './StatusHero';
 
 interface ResultsReportProps {
   result: FullCheckResponse;
@@ -34,171 +34,117 @@ export function ResultsReport({
   onShare,
   onCheckAnother,
 }: ResultsReportProps) {
-  const [showCorrectItems, setShowCorrectItems] = useState(false);
+  const dosageErrors = result.errors ?? [];
+  const dosageWarnings = result.warnings ?? [];
+  const complianceErrors = result.compliance_errors ?? [];
+  const totalPenalty = result.penalties?.total_amount ?? 0;
 
-  // Safe access to nested properties
-  const errors = result.errors ?? [];
-  const warnings = result.warnings ?? [];
-  const presentFields = result.mandatory_fields?.present ?? [];
-  const foundPhrases = result.forbidden_phrases?.found ?? [];
-  const totalPenalty = result.penalties?.total ?? 0;
+  const forbiddenPhrases = complianceErrors.filter((e) => e.type === 'forbidden_phrase');
+  const missingFields = complianceErrors.filter((e) => e.type === 'mandatory_field');
 
-  const hasErrors = errors.length > 0;
-  const hasWarnings = warnings.length > 0;
-  const correctCount = presentFields.length;
+  const totalErrorCount = dosageErrors.length + complianceErrors.length;
+  const totalWarningCount = dosageWarnings.length;
+  const totalIngredients = result.stats?.total_ingredients ?? 0;
+
+  const hasAnyErrors = totalErrorCount > 0;
+  const hasAnyWarnings = totalWarningCount > 0;
 
   return (
     <div className="w-full max-w-3xl mx-auto">
-      {/* Main Card */}
       <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
-        {/* Header */}
-        <div
-          className={cn(
-            'p-6 text-center',
-            result.is_valid ? 'bg-success-light' : 'bg-error-light'
-          )}
-        >
-          <div className="flex justify-center mb-4">
-            {result.is_valid ? (
-              <div className="w-16 h-16 rounded-full bg-success flex items-center justify-center">
-                <CheckCircle className="h-8 w-8 text-white" />
-              </div>
-            ) : (
-              <div className="w-16 h-16 rounded-full bg-error flex items-center justify-center">
-                <XCircle className="h-8 w-8 text-white" />
-              </div>
-            )}
-          </div>
-          <h2 className="text-2xl font-bold text-foreground">
-            {content.checker.results.title}
-          </h2>
-          <p
-            className={cn(
-              'mt-2 font-medium',
-              result.is_valid ? 'text-success' : 'text-error'
-            )}
-          >
-            {result.is_valid
-              ? content.checker.results.valid
-              : content.checker.results.invalid}
-          </p>
-        </div>
+        <StatusHero result={result} />
 
-        {/* Summary Stats */}
+        {/* Summary Stats — нейтральні лічильники */}
         <div className="grid grid-cols-3 border-b">
           <div className="p-4 text-center border-r">
-            <p className="text-2xl font-bold text-error">{errors.length}</p>
+            <p className="text-2xl font-bold text-error">{totalErrorCount}</p>
             <p className="text-xs text-muted-foreground">
               {content.checker.results.errors}
             </p>
           </div>
           <div className="p-4 text-center border-r">
-            <p className="text-2xl font-bold text-warning">{warnings.length}</p>
+            <p className="text-2xl font-bold text-warning">{totalWarningCount}</p>
             <p className="text-xs text-muted-foreground">
               {content.checker.results.warnings}
             </p>
           </div>
           <div className="p-4 text-center">
-            <p className="text-2xl font-bold text-success">{correctCount}</p>
-            <p className="text-xs text-muted-foreground">
-              {content.checker.results.correct}
-            </p>
+            <p className="text-2xl font-bold text-foreground">{totalIngredients}</p>
+            <p className="text-xs text-muted-foreground">Проаналізовано</p>
           </div>
         </div>
 
-        {/* Content */}
         <div className="p-6 pb-24 md:pb-6 space-y-6">
-          {/* Penalty Summary */}
-          {(hasErrors || hasWarnings) && (
+          {(hasAnyErrors || hasAnyWarnings) && totalPenalty > 0 && (
             <PenaltySummary
               totalPenalty={totalPenalty}
-              errorCount={errors.length}
-              warningCount={warnings.length}
+              errorCount={totalErrorCount}
+              warningCount={totalWarningCount}
             />
           )}
 
-          {/* Errors Section */}
-          {hasErrors && (
-            <div>
+          {/* Dosage Errors */}
+          {dosageErrors.length > 0 && (
+            <section>
               <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
                 <XCircle className="h-5 w-5 text-error" />
-                {content.checker.results.errors} ({errors.length})
+                Помилки дозування ({dosageErrors.length})
               </h3>
               <div className="space-y-3">
-                {errors.map((error, index) => (
-                  <ErrorCard key={index} error={error} />
+                {dosageErrors.map((error, index) => (
+                  <ErrorCard key={`dosage-err-${index}`} error={error} />
                 ))}
               </div>
-            </div>
-          )}
-
-          {/* Warnings Section */}
-          {hasWarnings && (
-            <div>
-              <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
-                <XCircle className="h-5 w-5 text-warning" />
-                {content.checker.results.warnings} ({warnings.length})
-              </h3>
-              <div className="space-y-3">
-                {warnings.map((warning, index) => (
-                  <WarningCard key={index} warning={warning} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Correct Items Section (Collapsible) */}
-          {correctCount > 0 && (
-            <div>
-              <button
-                onClick={() => setShowCorrectItems(!showCorrectItems)}
-                className="w-full flex items-center justify-between p-4 bg-success-light rounded-xl hover:bg-success-100 transition-colors"
-              >
-                <span className="flex items-center gap-2 font-medium text-foreground">
-                  <CheckCircle className="h-5 w-5 text-success" />
-                  {content.checker.results.correct} ({correctCount})
-                </span>
-                {showCorrectItems ? (
-                  <ChevronUp className="h-5 w-5 text-muted-foreground" />
-                ) : (
-                  <ChevronDown className="h-5 w-5 text-muted-foreground" />
-                )}
-              </button>
-              {showCorrectItems && (
-                <div className="mt-3 space-y-2">
-                  {presentFields.map((field, index) => (
-                    <div
-                      key={index}
-                      className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg"
-                    >
-                      <CheckCircle className="h-4 w-4 text-success" />
-                      <span className="text-sm text-foreground">{field}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            </section>
           )}
 
           {/* Forbidden Phrases */}
-          {foundPhrases.length > 0 && (
-            <div className="p-4 bg-error-light rounded-xl">
-              <h4 className="font-medium text-foreground mb-2">
-                Виявлені заборонені фрази:
-              </h4>
-              <ul className="space-y-1">
-                {foundPhrases.map((phrase, index) => (
-                  <li key={index} className="text-sm text-error flex items-start gap-2">
-                    <span>•</span>
-                    <span>{phrase}</span>
-                  </li>
+          {forbiddenPhrases.length > 0 && (
+            <section>
+              <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
+                <Ban className="h-5 w-5 text-error" />
+                Заборонені фрази ({forbiddenPhrases.length})
+              </h3>
+              <div className="space-y-3">
+                {forbiddenPhrases.map((error, index) => (
+                  <ComplianceErrorCard key={`phrase-${index}`} error={error} />
                 ))}
-              </ul>
-            </div>
+              </div>
+            </section>
+          )}
+
+          {/* Missing Mandatory Fields */}
+          {missingFields.length > 0 && (
+            <section>
+              <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
+                <FileWarning className="h-5 w-5 text-error" />
+                Відсутні обов&apos;язкові поля ({missingFields.length})
+              </h3>
+              <div className="space-y-3">
+                {missingFields.map((error, index) => (
+                  <ComplianceErrorCard key={`field-${index}`} error={error} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Dosage Warnings */}
+          {dosageWarnings.length > 0 && (
+            <section>
+              <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-warning" />
+                {content.checker.results.warnings} ({dosageWarnings.length})
+              </h3>
+              <div className="space-y-3">
+                {dosageWarnings.map((warning, index) => (
+                  <WarningCard key={`warn-${index}`} warning={warning} />
+                ))}
+              </div>
+            </section>
           )}
         </div>
 
-        {/* Action Buttons - Sticky on Mobile */}
+        {/* Action Buttons — Sticky on Mobile */}
         <div className="sticky bottom-0 left-0 right-0 md:static bg-white border-t md:border-0 p-4 md:px-6 md:pb-6 shadow-up md:shadow-none">
           <div className="flex flex-col sm:flex-row gap-3">
             <Button
@@ -208,31 +154,17 @@ export function ResultsReport({
               <Download className="mr-2 h-4 w-4" />
               {content.checker.results.downloadPdf}
             </Button>
-            <Button
-              onClick={onCheckAnother}
-              variant="outline"
-              className="flex-1"
-            >
+            <Button onClick={onCheckAnother} variant="outline" className="flex-1">
               <RefreshCw className="mr-2 h-4 w-4" />
               {content.checker.results.checkAnother}
             </Button>
           </div>
           <div className="flex gap-3 mt-3">
-            <Button
-              onClick={onSendEmail}
-              variant="ghost"
-              size="sm"
-              className="flex-1"
-            >
+            <Button onClick={onSendEmail} variant="ghost" size="sm" className="flex-1">
               <Mail className="mr-2 h-4 w-4" />
               {content.checker.results.sendEmail}
             </Button>
-            <Button
-              onClick={onShare}
-              variant="ghost"
-              size="sm"
-              className="flex-1"
-            >
+            <Button onClick={onShare} variant="ghost" size="sm" className="flex-1">
               <Share2 className="mr-2 h-4 w-4" />
               {content.checker.results.share}
             </Button>
@@ -242,5 +174,3 @@ export function ResultsReport({
     </div>
   );
 }
-
-

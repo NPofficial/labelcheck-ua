@@ -4,6 +4,6 @@ export { ProgressStepper } from './ProgressStepper';
 export { ResultsReport } from './ResultsReport';
 export { ErrorCard } from './ErrorCard';
 export { WarningCard } from './WarningCard';
+export { ComplianceErrorCard } from './ComplianceErrorCard';
 export { PenaltySummary } from './PenaltySummary';
-
-
+export { StatusHero } from './StatusHero';
