@@ -1,5 +1,6 @@
 import { AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDosageSource } from '@/lib/labels';
 import type { DosageWarning, DosageErrorLevel } from '@/lib/types';
 
 interface WarningCardProps {
@@ -74,7 +75,9 @@ export function WarningCard({ warning }: WarningCardProps) {
           )}
 
           {warning.source && (
-            <p className="text-xs text-muted-foreground mt-2">Джерело: {warning.source}</p>
+            <p className="text-xs text-muted-foreground mt-2">
+              Джерело: {formatDosageSource(warning.source)}
+            </p>
           )}
         </div>
       </div>

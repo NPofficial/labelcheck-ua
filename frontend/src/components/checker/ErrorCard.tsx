@@ -1,5 +1,6 @@
 import { XCircle } from 'lucide-react';
 import { cn, formatCurrency } from '@/lib/utils';
+import { formatDosageSource } from '@/lib/labels';
 import type { DosageError, DosageErrorLevel } from '@/lib/types';
 
 interface ErrorCardProps {
@@ -97,7 +98,7 @@ export function ErrorCard({ error }: ErrorCardProps) {
 
           <p className="text-xs text-muted-foreground mt-2">
             Джерело: {error.regulatory_source}
-            {error.source ? ` · ${error.source}` : ''}
+            {error.source ? ` · ${formatDosageSource(error.source)}` : ''}
           </p>
         </div>
       </div>

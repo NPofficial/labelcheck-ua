@@ -1,5 +1,6 @@
 import { Ban, FileWarning } from 'lucide-react';
 import { cn, formatCurrency } from '@/lib/utils';
+import { formatRegulatorySource } from '@/lib/labels';
 import type { ComplianceError } from '@/lib/types';
 
 interface ComplianceErrorCardProps {
@@ -76,8 +77,7 @@ function ForbiddenPhraseCard({ error }: { error: ComplianceError }) {
           </div>
 
           <p className="text-xs text-muted-foreground mt-2">
-            Джерело: {error.regulatory_source}
-            {error.article_number ? `, ст. ${error.article_number}` : ''}
+            Джерело: {formatRegulatorySource(error.regulatory_source, error.article_number)}
           </p>
         </div>
       </div>
@@ -121,8 +121,7 @@ function MandatoryFieldCard({ error }: { error: ComplianceError }) {
           </div>
 
           <p className="text-xs text-muted-foreground mt-2">
-            Джерело: {error.regulatory_source}
-            {error.article_number ? `, ст. ${error.article_number}` : ''}
+            Джерело: {formatRegulatorySource(error.regulatory_source, error.article_number)}
           </p>
         </div>
       </div>
