@@ -153,6 +153,10 @@ const config = {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.5" },
         },
+        "indeterminate": {
+          "0%": { transform: "translateX(-100%)" },
+          "100%": { transform: "translateX(400%)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
@@ -161,6 +165,7 @@ const config = {
         "slide-up": "slide-up 0.5s ease-out",
         "slide-down": "slide-down 0.3s ease-out",
         "pulse-slow": "pulse-slow 3s ease-in-out infinite",
+        "indeterminate": "indeterminate 1.5s ease-in-out infinite",
       },
     },
   },
