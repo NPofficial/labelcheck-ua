@@ -10,10 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VERSION=1.7.1
 
 # Install system dependencies
+# fonts-dejavu-core provides DejaVuSans.ttf / DejaVuSans-Bold.ttf at
+# /usr/share/fonts/truetype/dejavu/ — required by report_service.py for
+# Ukrainian Cyrillic rendering in PDF reports.
 RUN apt-get update && apt-get install -y \
     gcc \
     postgresql-client \
     libpq-dev \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
